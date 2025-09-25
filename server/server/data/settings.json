@@ -1,0 +1,5 @@
+{
+  "maxConcurrent": 2,
+  "limitRateKbps": 0,
+  "lastPort": 5176
+}
