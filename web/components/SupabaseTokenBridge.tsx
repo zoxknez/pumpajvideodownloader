@@ -10,7 +10,7 @@ type SupabaseTokenBridgeProps = {
 };
 
 export function SupabaseTokenBridge({ onSessionResolved }: SupabaseTokenBridgeProps) {
-  const { setToken, logout } = useAuth();
+  const { setToken } = useAuth();
 
   useEffect(() => {
     const supabase = getSupabase();
@@ -25,7 +25,7 @@ export function SupabaseTokenBridge({ onSessionResolved }: SupabaseTokenBridgePr
           setToken(token);
         } else {
           localStorage.removeItem('app:token');
-          logout();
+          setToken(null);
         }
       } catch {
         // ignore storage failures (private mode, etc.)
@@ -48,7 +48,7 @@ export function SupabaseTokenBridge({ onSessionResolved }: SupabaseTokenBridgePr
       subscription.subscription.unsubscribe();
       window.removeEventListener('pumpaj:auth:logout', handleAppLogout);
     };
-  }, [logout, onSessionResolved, setToken]);
+  }, [onSessionResolved, setToken]);
 
   return null;
 }
