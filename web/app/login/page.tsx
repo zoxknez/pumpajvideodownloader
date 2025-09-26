@@ -2,7 +2,7 @@
 
 import { FormEvent, useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { getSupabase } from '@/lib/supabaseClient';
+import { getSupabase, isSupabaseConfigured } from '@/lib/supabaseClient';
 
 type Mode = 'login' | 'register';
 
@@ -16,8 +16,15 @@ export default function Login() {
   const [message, setMessage] = useState('');
   const [messageTone, setMessageTone] = useState<'neutral' | 'success' | 'error'>('neutral');
   const [nextPath, setNextPath] = useState('/');
+  const supabaseReady = isSupabaseConfigured();
 
   useEffect(() => {
+    if (!supabaseReady) {
+      setMessage('Supabase autentikacija nije konfigurisana. Obrati se administratoru.');
+      setMessageTone('error');
+      return;
+    }
+
     const resolved = (() => {
       if (typeof window === 'undefined') return '/';
       const qs = new URLSearchParams(window.location.search);
@@ -26,10 +33,11 @@ export default function Login() {
     })();
     setNextPath(resolved);
     const supabase = getSupabase();
+    if (!supabase) return;
     supabase.auth.getSession().then(({ data }) => {
       if (data.session) router.replace(resolved);
     });
-  }, [router]);
+  }, [router, supabaseReady]);
 
   const formTitle = mode === 'login' ? 'Dobrodošao nazad' : 'Kreiraj nalog';
   const formSubtitle = mode === 'login'
@@ -46,11 +54,22 @@ export default function Login() {
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    if (!supabaseReady) {
+      setMessage('Prijava nije dostupna jer Supabase okruženje nije podešeno.');
+      setMessageTone('error');
+      return;
+    }
     if (!canSubmit || loading) return;
     setLoading(true);
     setMessage('');
     setMessageTone('neutral');
     const supabase = getSupabase();
+    if (!supabase) {
+      setMessage('Supabase klijent nije dostupan.');
+      setMessageTone('error');
+      setLoading(false);
+      return;
+    }
     try {
       if (mode === 'login') {
         const { error } = await supabase.auth.signInWithPassword({ email, password });
@@ -85,7 +104,17 @@ export default function Login() {
     setMessage('');
     setMessageTone('neutral');
     try {
+      if (!supabaseReady) {
+        setMessage('Supabase okruženje nije dostupno. Obrati se podršci.');
+        setMessageTone('error');
+        return;
+      }
       const supabase = getSupabase();
+      if (!supabase) {
+        setMessage('Supabase klijent nije dostupan.');
+        setMessageTone('error');
+        return;
+      }
       const { error } = await supabase.auth.resetPasswordForEmail(email, {
         redirectTo: typeof window === 'undefined' ? undefined : `${window.location.origin}/login`,
       });

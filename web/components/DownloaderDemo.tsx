@@ -1,6 +1,6 @@
 "use client";
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { getSupabase } from '@/lib/supabaseClient';
+import { getSupabase, isSupabaseConfigured } from '@/lib/supabaseClient';
 import type { AuthChangeEvent, Session } from '@supabase/supabase-js';
 import { postJSON, downloadJobFile } from '@/lib/api';
 
@@ -13,6 +13,7 @@ export default function DownloaderDemo() {
   const [token, setToken] = useState<string>('');
   const [session, setSession] = useState<Session | null>(null);
   const [message, setMessage] = useState('');
+  const supabaseEnabled = isSupabaseConfigured();
   const sseRef = useRef<{ close: () => void } | null>(null);
 
   const isWorking = useMemo(() => ['queued', 'running', 'processing', 'downloading'].includes(stage), [stage]);
@@ -31,7 +32,19 @@ export default function DownloaderDemo() {
   const canStart = Boolean(token && url.trim());
 
   useEffect(() => {
+    if (!supabaseEnabled) {
+      setMessage('Supabase autentikacija nije konfigurisana za web verziju. Obrati se administratoru ili koristi desktop aplikaciju.');
+      setToken('');
+      setSession(null);
+      setStage('idle');
+      return;
+    }
+
     const supabase = getSupabase();
+    if (!supabase) {
+      setMessage('Supabase autentikacija nije dostupna.');
+      return;
+    }
     supabase.auth.getSession().then(({ data }: { data: { session: Session | null } }) => {
       const sess = data.session;
       setSession(sess || null);
@@ -50,9 +63,13 @@ export default function DownloaderDemo() {
       subscription.subscription.unsubscribe();
       sseRef.current?.close();
     };
-  }, []);
+  }, [supabaseEnabled]);
 
   async function startJob() {
+    if (!supabaseEnabled) {
+      setMessage('Web autentikacija nije dostupna. Molimo koristi desktop aplikaciju ili kontaktiraj podršku.');
+      return;
+    }
     if (!token) {
       setMessage('Morate biti prijavljeni.');
       return;
@@ -99,6 +116,7 @@ export default function DownloaderDemo() {
       setMessage('');
       sseRef.current?.close();
       const supabase = getSupabase();
+      if (!supabase) return;
       await supabase.auth.signOut();
     } catch (err: any) {
       setMessage(err?.message || 'Odjava nije uspela.');

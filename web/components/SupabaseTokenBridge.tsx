@@ -2,7 +2,7 @@
 
 import { useEffect } from 'react';
 import type { Session } from '@supabase/supabase-js';
-import { getSupabase } from '@/lib/supabaseClient';
+import { getSupabase, isSupabaseConfigured } from '@/lib/supabaseClient';
 import { useAuth } from '../../src/components/AuthProvider';
 
 type SupabaseTokenBridgeProps = {
@@ -13,7 +13,18 @@ export function SupabaseTokenBridge({ onSessionResolved }: SupabaseTokenBridgePr
   const { setToken } = useAuth();
 
   useEffect(() => {
+    if (!isSupabaseConfigured()) {
+      setToken(null);
+      onSessionResolved?.(null);
+      return;
+    }
+
     const supabase = getSupabase();
+    if (!supabase) {
+      setToken(null);
+      onSessionResolved?.(null);
+      return;
+    }
     let mounted = true;
 
     const applySession = (session: Session | null) => {
