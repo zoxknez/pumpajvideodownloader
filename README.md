@@ -363,11 +363,21 @@ Direktorijum sa podacima (kanonski)
 
 ## 📸 Screenshots
 
-Add your screenshots to `docs/` and reference them here. Example placeholders (replace when ready):
+Real app UI, captured from the current build:
 
-| Home | Analyze | Queue |
-|---|---|---|
-| ![Home](docs/screenshot-home.png) | ![Analyze](docs/screenshot-analyze.png) | ![Queue](docs/screenshot-queue.png) |
+<div align="center">
+
+<img src="docs/pumpaj-home.jpg" alt="Home screen (idle)" width="900" />
+
+<br /><br />
+
+<img src="docs/pumpaj-analysis.jpg" alt="Analysis completed with video/audio options" width="900" />
+
+</div>
+
+Tips:
+- Store images under `docs/` so GitHub can render them in the README.
+- Keep widths around 900–1200px to stay crisp but repo‑friendly.
 
 Dobrodošli su PR‑ovi i issue‑i. Molimo pošaljite fokusirane izmene, kratak opis, screenshot za UI izmene i korake za testiranje.
 

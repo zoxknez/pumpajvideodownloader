@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { DownloadCard } from './DownloadCard';
 import { Video, Crown, Zap, Shield, Play } from 'lucide-react';
-import { cancelJob, downloadJobFile, isJobFileReady, resolveFormatUrl, proxyDownload, startBestJob, subscribeJobProgress } from '../lib/api';
+import { cancelJob, downloadJobFile, isJobFileReady, resolveFormatUrl, proxyDownload, startBestJob, subscribeJobProgress, jobFileUrl } from '../lib/api';
 import { ipcAvailable, startIpcAdvanced, onProgressIpc, onDoneIpc, revealPath, openPath } from '../lib/downloader';
 import { useToast } from './ToastProvider';
 
@@ -220,7 +220,15 @@ export const VideoSection: React.FC<VideoSectionProps> = ({ analysisData, onForm
         },
         async (status) => {
           if (status === 'completed') {
-            try { await downloadJobFile(id); } catch {}
+            try {
+              const ok = await downloadJobFile(id);
+              if (!ok) {
+                // As a last resort, open the file URL directly to trigger browser download
+                try { window.location.href = jobFileUrl(id); } catch {}
+              }
+            } catch {
+              try { window.location.href = jobFileUrl(id); } catch {}
+            }
           }
           setTimeout(() => { setJobId(null); setJobProgress(0); setJobStage(''); }, 600);
         }
@@ -408,7 +416,7 @@ export const VideoSection: React.FC<VideoSectionProps> = ({ analysisData, onForm
     return () => { disposed = true; clearInterval(interval); };
   }, [jobId, jobStage, jobProgress]);
 
-  // Fallback 2: if after ~12s there's still no visible progress, try direct format download via proxy and cancel the job
+  // Fallback 2: if after ~30s there's still no visible progress, try direct format download via proxy and cancel the job
   useEffect(() => {
     if (!analysisData || !jobId) return;
     const data: any = analysisData;
@@ -417,7 +425,7 @@ export const VideoSection: React.FC<VideoSectionProps> = ({ analysisData, onForm
       if (!jobId) { clearInterval(tick); return; }
       if (directFallbackRef.current) { clearInterval(tick); return; }
       const elapsed = Date.now() - started;
-      if (elapsed > 12000 && (jobProgress ?? 0) < 1) {
+      if (elapsed > 30000 && (jobProgress ?? 0) < 1) {
         try {
           directFallbackRef.current = true;
           const fmt = (data.formats || [])[selectedFormat] || (data.formats || [])[0];
