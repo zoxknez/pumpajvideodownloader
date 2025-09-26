@@ -1,8 +1,9 @@
-import { supabase } from './supabaseClient';
+import { getSupabase } from './supabaseClient';
 
 const API = process.env.NEXT_PUBLIC_API!;
 
 async function authHeaders(): Promise<Record<string, string>> {
+  const supabase = getSupabase();
   const { data } = await supabase.auth.getSession();
   const token = data.session?.access_token;
   return token ? { Authorization: `Bearer ${token}` } : {};

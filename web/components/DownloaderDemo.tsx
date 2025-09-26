@@ -1,6 +1,6 @@
 'use client';
 import { useState, useEffect } from 'react';
-import { supabase } from '@/lib/supabaseClient';
+import { getSupabase } from '@/lib/supabaseClient';
 import type { AuthChangeEvent, Session } from '@supabase/supabase-js';
 import { postJSON, downloadJobFile } from '@/lib/api';
 
@@ -13,18 +13,20 @@ export default function DownloaderDemo() {
   const [token, setToken] = useState<string>('');
 
   useEffect(() => {
+    const supabase = getSupabase();
     supabase.auth.getSession().then(({ data }: { data: { session: Session | null } }) => {
       const t = data.session?.access_token;
       if (t) setToken(t);
     });
-    const sub = supabase.auth.onAuthStateChange((_e: AuthChangeEvent, session: Session | null) => {
+  const sub = supabase.auth.onAuthStateChange((_e: AuthChangeEvent, session: Session | null) => {
       setToken(session?.access_token || '');
     });
     return () => { sub.data.subscription.unsubscribe(); };
   }, []);
 
   async function startJob() {
-    setProgress(0); setStage('queued'); setJobId(null);
+  setProgress(0); setStage('queued'); setJobId(null);
+  const supabase = getSupabase();
     const resp = await postJSON<{id:string}>('/api/job/start/best', { url, title });
     setJobId(resp.id);
   const headers: Record<string,string> = token ? { Authorization: `Bearer ${token}` } : {};
