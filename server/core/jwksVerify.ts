@@ -4,8 +4,8 @@ import type { JwtPayload } from 'jsonwebtoken';
 // Minimal JWKS cache via remote JWKS URL (Auth0-like). In production, use a solid JWKS client.
 // For simplicity, accept HS256 fallback via APP_JWT_SECRET if provided.
 
-const APP_JWT_ISSUER = process.env.APP_JWT_ISSUER || 'yt-dlp-server';
-const APP_JWT_AUDIENCE = process.env.APP_JWT_AUDIENCE || 'yt-dlp-api';
+const APP_JWT_ISSUER = process.env.APP_JWT_ISSUER || process.env.APP_JWT_ISS || 'yt-dlp-server';
+const APP_JWT_AUDIENCE = process.env.APP_JWT_AUDIENCE || process.env.APP_JWT_AUD || 'yt-dlp-api';
 const APP_JWT_PRIVATE = process.env.APP_JWT_PRIVATE_KEY || '';
 const APP_JWT_PUBLIC = process.env.APP_JWT_PUBLIC_KEY || '';
 const APP_JWT_SECRET = process.env.APP_JWT_SECRET || '';
