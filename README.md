@@ -177,3 +177,167 @@ PRs and issues are welcome. Keep changes focused, and include a short descriptio
 - ffmpeg / ffprobe – media swiss‑army knives
 - Vite + React – the modern web dev stack
 
+## 🇷🇸 Srpski (Serbian)
+
+### Opis
+
+Pumpaj Media Downloader je dvo‑modni downloader: Web aplikacija (Vite + React) i Desktop aplikacija (Electron) pokretana yt‑dlp + ffmpeg alatima, sa praćenjem napretka u realnom vremenu (SSE), pametnim redom poslova i modernim UI‑jem.
+
+### Ključne funkcije
+
+- Analiza URL‑ova pomoću yt‑dlp i jasan prikaz Video / Audio / Thumbnail opcija
+- Serverski red poslova sa živim napretkom, otkazivanjem jednog posla ili svih
+- Ograničenja konkurentnosti, rad sa privremenim fajlovima i automatsko čišćenje
+- Desktop režim (Electron): ugradjeni server, IPC kontrole (Open Downloads, Pause/Resume)
+- Sistem politika (FREE vs PREMIUM) za ograničenje kvaliteta, funkcija i paralelizma
+- Lep, brz UI sa prečicama na tastaturi i status bedževima
+
+### Arhitektura
+
+- Frontend: Vite + React + TypeScript (port 5183, striktno)
+- Backend: Express + yt‑dlp + ffmpeg (podrazumevano 5176)
+- Desktop: Electron omotač sa IPC‑om i ugradjenim serverom
+- Realtime: SSE za napredak preuzimanja
+- Skladište: JSON fajlovi u `server/data/` (settings, users, history) uz migraciju sa starih putanja
+
+Struktura repozitorijuma (skraćeno):
+- `src/` – React komponentе i klijentske biblioteke
+- `server/` – Express server, rute i pomoćne funkcije
+- `electron/` – Desktop ulazne tačke i build
+- `tools/` – skripte za razvoj (stop, clean, smoke, clean‑data)
+
+### Zahtevi
+
+- Node.js >= 18.18
+- Windows je primarni cilj za desktop build; web radi na svim platformama
+
+### Brzi start (razvoj)
+
+Instalacija zavisnosti:
+
+```powershell
+npm install
+```
+
+Pokretanje oba servisa:
+
+```powershell
+npm run dev:start:all
+```
+
+Pojedinačno pokretanje:
+
+```powershell
+# Frontend (Vite, http://localhost:5183)
+npm run dev:start:frontend
+
+# Backend (Express, http://localhost:5176)
+npm run dev:start:backend
+```
+
+Zaustavljanje portova i čišćenje artefakata:
+
+```powershell
+npm run dev:stop
+npm run dev:clean
+```
+
+Čist početak podataka (briše dist/, logs/ i server/data):
+
+```powershell
+npm run dev:clean:data
+```
+
+Smoke test (zdravlje servera):
+
+```powershell
+npm run dev:smoke
+```
+
+### Desktop (Electron)
+
+Razvoj sa IPC kontrolama:
+
+```powershell
+npm run dev:ipc
+```
+
+Proizvodni build (Windows portable + zip):
+
+```powershell
+npm run dist:win
+```
+
+### Web build
+
+```powershell
+npm run build
+npm run preview
+```
+
+### Konfiguracija
+
+Frontend
+- `.env.local`: podesite `VITE_API_BASE` (npr. `http://localhost:5176`)
+- Na runtime‑u UI pokušava i auto‑detekciju: query `?apiBase=`, `window.__API_BASE`, heuristika za `file://`
+
+Backend (okruženje)
+- CORS preko `CORS_ORIGIN`:
+   - Dozvoli sve (dev): `CORS_ORIGIN=*`
+   - Isključi CORS: `CORS_ORIGIN=disabled`
+   - Lista dozvoljenih: `CORS_ORIGIN=http://localhost:5183,https://tvoj.sajt`
+
+Direktorijum sa podacima (kanonski)
+- `server/data/` sadrži:
+   - `settings.json` – podešavanja servera (port, limiti…)
+   - `history.json` – istorija poslova
+   - `users.json` – korisnici i planovi
+- Na prvom startu server migrira fajlove sa starih putanja (npr. `server/server/data/`).
+- Verziona kontrola ignoriše ove fajlove; koristi `npm run dev:clean:data` za reset.
+
+### Prečice na tastaturi
+
+- Ctrl+1..5 – promene tabova (Download / Queue / Batch / History / Settings)
+- Enter – Analyze (na Download tabu)
+- Ctrl+L – fokusira URL polje
+
+### Job API (server)
+
+- Start best video+audio: `POST /api/job/start/best { url, title } → { id }`
+- Start best audio: `POST /api/job/start/audio { url, title, format } → { id }`
+- Napredak (SSE): `GET /api/progress/:id` (eventovi: `message`, `end`)
+- Otkazivanje: `POST /api/job/cancel/:id`
+- Otkazivanje svih: `POST /api/jobs/cancel-all`
+- Preuzimanje artefakta: `GET /api/job/file/:id` (podržava `HEAD`; auto‑čišćenje na kraj strima)
+- Metriке: `GET /api/jobs/metrics` → `{ running, queued, maxConcurrent }`
+- Podešavanja:
+   - `GET /api/jobs/settings` → `{ maxConcurrent, proxyUrl?, limitRateKbps? }`
+   - `POST /api/jobs/settings { ... }` – čuva i primenjuje odmah
+
+### Rešavanje problema
+
+- Port 5183 zauzet (frontend)
+   - Vite već radi. Pokreni:
+      ```powershell
+      npm run dev:stop
+      ```
+- UI ne vidi backend
+   - Proveri zdravlje:
+      ```powershell
+      curl http://localhost:5176/health
+      ```
+      Očekuj `{ "ok": true }`. Ako koristiš drugi port, postavi `VITE_API_BASE`.
+- yt‑dlp / ffmpeg
+   - Server koristi `youtube-dl-exec` i `ffmpeg-static`. Desktop build ih pakuje uz aplikaciju.
+- Proxy / ograničenje brzine
+   - Podesi u Settings u UI‑ju ili preko `POST /api/jobs/settings`.
+
+### Bezbednost i politike
+
+- Middleware: helmet, rate limiting, HPP, zaštita od SSRF, CORS
+- Politike: ograničavaju maksimalni kvalitet, konkurentnost, veličinu plejlista i dostupne funkcije po planu (FREE/PREMIUM)
+
+### Doprinos
+
+Dobrodošli su PR‑ovi i issue‑i. Molimo pošaljite fokusirane izmene, kratak opis, screenshot za UI izmene i korake za testiranje.
+
