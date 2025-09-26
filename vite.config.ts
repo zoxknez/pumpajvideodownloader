@@ -6,9 +6,17 @@ import path from 'node:path';
 // https://vitejs.dev/config/
 function resolveBackendPort(): number {
   try {
-    const p = path.resolve(process.cwd(), 'server', 'server', 'data', 'settings.json');
-    if (fs.existsSync(p)) {
-      const j = JSON.parse(fs.readFileSync(p, 'utf8'));
+    // Prefer new canonical path: <repo>/server/data/settings.json
+    const pNew = path.resolve(process.cwd(), 'server', 'data', 'settings.json');
+    if (fs.existsSync(pNew)) {
+      const j = JSON.parse(fs.readFileSync(pNew, 'utf8'));
+      const n = Number(j?.lastPort);
+      if (Number.isFinite(n) && n > 0) return n;
+    }
+    // Fallback to legacy path used by older builds
+    const pLegacy = path.resolve(process.cwd(), 'server', 'server', 'data', 'settings.json');
+    if (fs.existsSync(pLegacy)) {
+      const j = JSON.parse(fs.readFileSync(pLegacy, 'utf8'));
       const n = Number(j?.lastPort);
       if (Number.isFinite(n) && n > 0) return n;
     }

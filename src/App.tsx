@@ -9,7 +9,7 @@ import { SettingsTab } from './components/SettingsTab';
 import { AnalysisResults } from './components/AnalysisResults';
 import { analyzeUrl, getJobsSettings, authHeaders } from './lib/api';
 import { getDefaultDirHandle } from './lib/fsStore';
-import { Download, Search, Clipboard, Trash2, Sparkles, Settings, Monitor, History as HistoryIcon, Clock } from 'lucide-react';
+import { Download, Search, Clipboard, Trash2, Sparkles, Settings, Monitor, History as HistoryIcon, Clock, Heart } from 'lucide-react';
 import pumpajLogo from './assets/pumpaj-logo.svg';
 import { QueueTab } from './components/QueueTab';
 
@@ -343,21 +343,31 @@ function App() {
           <div className="relative z-10">
           {/* Header */}
           <div className="text-center mb-8">
-          <div className="flex items-center justify-center gap-3 mb-4">
+          <div className="flex items-center justify-center gap-3 mb-4 overflow-visible">
             <div className="p-3 rounded-2xl bg-gradient-to-br from-blue-500 to-purple-600 shadow-lg shadow-blue-500/25">
               <img src={pumpajLogo} alt="Pumpaj logo" className="w-12 h-12 object-contain" />
             </div>
             <div className="flex items-center gap-2 flex-wrap">
-              <h1 className="text-4xl font-bold bg-gradient-to-r from-blue-400 to-purple-400 bg-clip-text text-transparent">Pumpaj Media Downloader</h1>
+              <h1 className="text-4xl leading-[1.2] font-bold bg-gradient-to-r from-blue-400 to-purple-400 bg-clip-text text-transparent pr-1">Pumpaj Media Downloader</h1>
               <Sparkles className="w-6 h-6 text-yellow-400 attention-icon icon-glow glow-amber" />
               <a
                 href="https://x.com/KoronVirus"
                 target="_blank"
                 rel="noopener noreferrer"
                 className="text-base px-3.5 py-2 rounded-full border border-purple-500/40 bg-purple-500/15 text-purple-100 font-semibold hover:bg-purple-500/25 transition-colors"
-                title="Autor: o0o0o0o"
+                title="Author: o0o0o0o"
               >
-                autor · o0o0o0o
+                Author · o0o0o0o
+              </a>
+              <a
+                href="https://www.paypal.com/paypalme/o0o0o0o0o0o0o"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-base px-3.5 py-2 rounded-full border border-amber-500/40 bg-amber-500/15 text-amber-100 font-semibold hover:bg-amber-500/25 transition-colors flex items-center gap-1.5"
+                title="Donate via PayPal"
+              >
+                <Heart className="w-4 h-4" />
+                Donate
               </a>
               {isIpc ? (
                 <span className="ml-2 text-sm px-3 py-1.5 rounded-full border text-emerald-300 border-emerald-500/30 bg-emerald-500/10">

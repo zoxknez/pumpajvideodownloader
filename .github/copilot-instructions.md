@@ -38,11 +38,14 @@ npm run dev:start:backend   # Express on 5176
 
 # Stop all development servers
 npm run dev:stop
+
+# Full clean (dist/logs + canonical and legacy data)
+npm run dev:clean:data
 ```
 
 ### Port Configuration
 - Frontend: **Always 5183** (strictPort in vite.config.ts)
-- Backend: **5176 default**, auto-detected from `server/server/data/settings.json`
+- Backend: **5176 default**, auto-detected from `server/server/data/settings.json` (Vite reads this value)
 - Vite proxy: Routes `/api`, `/auth`, `/health` to backend port
 
 ### Build Targets
@@ -92,7 +95,11 @@ if (isIpc) {
 - `tools/` - PowerShell development scripts
 
 ### Configuration Files
-- `server/server/data/settings.json` - Runtime server settings
+- Canonical data directory (server runtime): `server/data/`
+  - `server/data/settings.json` - Runtime server settings (port, etc.)
+  - `server/data/history.json` - Download history
+  - `server/data/users.json` - Users storage (plans, activation)
+- Legacy compatibility: older builds may have written under `server/server/data/`; the server now migrates from legacy to canonical paths on first read.
 - `.env.local` - Frontend environment (VITE_API_BASE)
 - `vite.config.ts` - Dynamic backend port resolution
 

@@ -19,18 +19,24 @@ export type HistoryItem = {
 // Store history under <cwd>/data when running from server directory
 const DATA_DIR = path.join(process.cwd(), 'data');
 const FILE = path.join(DATA_DIR, 'history.json');
+// Legacy paths for migration support
+const LEGACY_DIR_1 = path.join(process.cwd(), 'server', 'data');
+const LEGACY_FILE_1 = path.join(LEGACY_DIR_1, 'history.json');
+const LEGACY_DIR_2 = path.join(process.cwd(), 'server', 'server', 'data');
+const LEGACY_FILE_2 = path.join(LEGACY_DIR_2, 'history.json');
 
 function ensure() {
   if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
   if (!fs.existsSync(FILE)) {
-    // Try migrate from legacy path (<cwd>/server/data/history.json)
+    // Try migrate from legacy paths
     try {
-      const legacyDir = path.join(process.cwd(), 'server', 'data');
-      const legacyFile = path.join(legacyDir, 'history.json');
-      if (fs.existsSync(legacyFile)) {
-        const buf = fs.readFileSync(legacyFile, 'utf8');
-        fs.writeFileSync(FILE, buf, 'utf8');
-        return;
+      const candidates = [LEGACY_FILE_1, LEGACY_FILE_2];
+      for (const legacy of candidates) {
+        if (fs.existsSync(legacy)) {
+          const buf = fs.readFileSync(legacy, 'utf8');
+          fs.writeFileSync(FILE, buf, 'utf8');
+          return;
+        }
       }
     } catch {}
     fs.writeFileSync(FILE, '[]', 'utf8');

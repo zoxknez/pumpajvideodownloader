@@ -1,8 +1,12 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-const dataDir = path.resolve(process.cwd(), 'server', 'data');
+// New canonical location: <cwd>/data/settings.json
+const dataDir = path.resolve(process.cwd(), 'data');
 const file = path.join(dataDir, 'settings.json');
+// Legacy location: <cwd>/server/data/settings.json (when cwd === server, this is server/server/data)
+const legacyDir = path.resolve(process.cwd(), 'server', 'data');
+const legacyFile = path.join(legacyDir, 'settings.json');
 
 export type ServerSettings = {
   maxConcurrent?: number;
@@ -14,7 +18,19 @@ export type ServerSettings = {
 
 export function readServerSettings(): ServerSettings {
   try {
-    if (!fs.existsSync(file)) return {};
+    // If new file doesn't exist, try legacy and migrate content
+    if (!fs.existsSync(file)) {
+      if (fs.existsSync(legacyFile)) {
+        try {
+          const legacyRaw = fs.readFileSync(legacyFile, 'utf-8');
+          const j = JSON.parse(legacyRaw || '{}');
+          if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
+          fs.writeFileSync(file, JSON.stringify(j, null, 2), 'utf-8');
+        } catch {}
+      } else {
+        return {};
+      }
+    }
     const raw = fs.readFileSync(file, 'utf-8');
     const j = JSON.parse(raw || '{}');
     return {

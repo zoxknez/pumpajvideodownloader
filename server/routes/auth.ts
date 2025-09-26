@@ -1,5 +1,5 @@
 import type { Express, Request, Response } from 'express';
-import { upsertUserFromProvider, getUserById } from '../db/usersRepo.js';
+import { upsertUserFromProvider, getUserById } from '../storage/usersRepo.js';
 import { signAppJwt, verifyAppJwt } from '../core/jwksVerify.js';
 import { policyFor } from '../core/policy.js';
 import { requireAuth } from '../middleware/auth.js';

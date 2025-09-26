@@ -22,6 +22,7 @@
     "dev:start:all": "concurrently -k --restart-tries 999 --restart-after 2000 -n FE,BE \"npm:dev:start:frontend\" \"npm:dev:start:backend\"",
     "dev:stop": "powershell -NoProfile -ExecutionPolicy Bypass -File .\\tools\\stop.ps1",
     "dev:clean": "powershell -NoProfile -ExecutionPolicy Bypass -File .\\tools\\clean.ps1",
+  "dev:clean:data": "powershell -NoProfile -ExecutionPolicy Bypass -File .\\tools\\clean-data.ps1",
     "dev:smoke": "powershell -NoProfile -ExecutionPolicy Bypass -File .\\tools\\smoke.ps1",
     "typecheck": "tsc -p tsconfig.app.json --noEmit",
     "typecheck:server": "tsc -p server/tsconfig.json --noEmit",
