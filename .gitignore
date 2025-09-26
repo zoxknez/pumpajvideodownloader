@@ -11,6 +11,8 @@ server/logs/
 coverage/
 .vite/
 release/
+.next/
+web/.next/
 # Logs
 logs
 *.log
