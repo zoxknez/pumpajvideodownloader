@@ -1123,9 +1123,11 @@ app.get('/api/job/file/:id', requireAuth as any, (req, res) => {
     res.on('close', ender); res.on('aborted', ender);
     stream.pipe(res);
     stream.on('close', () => {
-      // Cleanup
-      fs.unlink(full, () => {});
-      jobs.delete(id);
+      try { fs.unlink(full, () => {}); } catch {}
+      try { cleanupJobFiles(job); } catch {}
+      try { jobs.delete(id); } catch {}
+      try { clearHistoryThrottle(id); } catch {}
+      try { sseListeners.delete(id); } catch {}
     });
   } catch (err: any) {
     log.error('job_file_failed', err?.message || err);

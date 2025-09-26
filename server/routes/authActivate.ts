@@ -14,7 +14,12 @@ export async function authActivate(req: Request, res: Response) {
 
     // Demo: bilo koji ne-prazan ključ aktivira PREMIUM
     setPlan(String(me.sub), 'PREMIUM');
-    const updated = getUserById(String(me.sub)) || { id: String(me.sub), email: me.email || '', plan: 'PREMIUM' as const };
+    const existing = getUserById(String(me.sub));
+    const updated = {
+      id: String(me.sub),
+      email: (existing?.email || me.email || '').trim(),
+      plan: 'PREMIUM' as const,
+    };
     upsertUser(updated);
 
     const fresh = signAppJwt({ sub: updated.id, email: updated.email, plan: 'PREMIUM' });
