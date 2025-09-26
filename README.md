@@ -1,12 +1,32 @@
 <div align="center">
 
-# Pumpaj Media Downloader
+   <img src="src/assets/pumpaj-logo.svg" alt="Pumpaj logo" width="96" height="96" />
 
-Dual‑mode, premium‑grade media downloader. Web app (Vite + React) and Desktop app (Electron) powered by yt‑dlp + ffmpeg, with real‑time progress, smart queueing, and a clean, modern UI.
+   <h1>Pumpaj Media Downloader</h1>
+
+   <p>
+      Dual‑mode, premium‑grade media downloader. Web app (Vite + React) and Desktop app (Electron)
+      powered by yt‑dlp + ffmpeg, with real‑time progress, smart queueing, and a clean, modern UI.
+   </p>
+
+   <p>
+      <a href="https://img.shields.io/badge/Node-%3E%3D18.18-339933?logo=node.js&logoColor=white"><img alt="Node" src="https://img.shields.io/badge/Node-%3E%3D18.18-339933?logo=node.js&logoColor=white" /></a>
+      <a href="https://vitejs.dev"><img alt="Vite" src="https://img.shields.io/badge/Vite-5.x-646CFF?logo=vite&logoColor=white" /></a>
+      <a href="https://react.dev"><img alt="React" src="https://img.shields.io/badge/React-18-61DAFB?logo=react&logoColor=white" /></a>
+      <a href="https://expressjs.com"><img alt="Express" src="https://img.shields.io/badge/Express-4.x-000000?logo=express&logoColor=white" /></a>
+      <a href="https://www.electronjs.org"><img alt="Electron" src="https://img.shields.io/badge/Electron-31-47848F?logo=electron&logoColor=white" /></a>
+      <img alt="yt-dlp" src="https://img.shields.io/badge/yt--dlp-latest-FF0000?logo=youtube&logoColor=white" />
+      <img alt="FFmpeg" src="https://img.shields.io/badge/FFmpeg-static-007808?logo=ffmpeg&logoColor=white" />
+      <img alt="Windows" src="https://img.shields.io/badge/Windows-10/11-0078D6?logo=windows&logoColor=white" />
+   </p>
+
+   <p>
+      <a href="#features-at-a-glance">English</a> • <a href="#-srpski-serbian">Srpski</a>
+   </p>
 
 </div>
 
-## Features at a glance
+## ✨ Features at a glance
 
 - Analyze any supported URL via yt‑dlp and present clean Video / Audio / Thumbnails options
 - Server‑side job queue with live progress (SSE), cancel single job or Cancel All
@@ -15,7 +35,7 @@ Dual‑mode, premium‑grade media downloader. Web app (Vite + React) and Deskto
 - Policy system for feature limits (FREE vs PREMIUM)
 - Beautiful UI with quick actions, keyboard shortcuts, and status badges
 
-## Architecture
+## 🧱 Architecture
 
 - Frontend: Vite + React + TypeScript (port 5183, strict)
 - Backend: Express + yt‑dlp + ffmpeg (default port 5176)
@@ -30,12 +50,12 @@ Repository layout highlights:
 - `electron/` – Desktop entry, preload, and packaging
 - `tools/` – Dev scripts (stop, clean, smoke, clean‑data)
 
-## Requirements
+## 📦 Requirements
 
 - Node.js >= 18.18 (LTS or newer)
 - Windows is the primary target for the desktop build; the web app runs cross‑platform
 
-## Quick start (development)
+## 🚀 Quick start (development)
 
 Install dependencies (root manages the workspace and the server package):
 
@@ -78,7 +98,7 @@ Smoke test (server health):
 npm run dev:smoke
 ```
 
-## Desktop (Electron) development
+## 🖥️ Desktop (Electron) development
 
 For a desktop experience with IPC controls:
 
@@ -95,7 +115,7 @@ npm run dist:win
 
 This bundles the web UI, the prebuilt server, and binaries into a portable app.
 
-## Web build (static)
+## 🌐 Web build (static)
 
 ```powershell
 npm run build
@@ -104,7 +124,7 @@ npm run preview
 
 `vite build` outputs to `dist/`. `vite preview` serves the static build locally.
 
-## Configuration
+## ⚙️ Configuration
 
 Frontend
 - `.env.local`: `VITE_API_BASE` to point the UI at a different backend
@@ -125,13 +145,13 @@ Data directory (canonical)
 - On first run, the server migrates old files from legacy paths (e.g., `server/server/data/`).
 - Git ignores these files; use `npm run dev:clean:data` to reset.
 
-## Keyboard shortcuts
+## ⌨️ Keyboard shortcuts
 
 - Ctrl+1..5 – Switch tabs (Download / Queue / Batch / History / Settings)
 - Enter – Analyze (on Download tab)
 - Ctrl+L – Focus URL input
 
-## Job API (server)
+## 🔌 Job API (server)
 
 - Start best video+audio: `POST /api/job/start/best { url, title } → { id }`
 - Start best audio: `POST /api/job/start/audio { url, title, format } → { id }`
@@ -144,7 +164,7 @@ Data directory (canonical)
    - `GET /api/jobs/settings` → `{ maxConcurrent, proxyUrl?, limitRateKbps? }`
    - `POST /api/jobs/settings { ... }` – persists and updates the scheduler live
 
-## Troubleshooting
+## 🧩 Troubleshooting
 
 - Frontend port 5183 already in use
    - A Vite instance is already running; run:
@@ -162,16 +182,16 @@ Data directory (canonical)
 - Proxy/Rate limits
    - Configure via Settings in the UI or POST to `/api/jobs/settings` (proxy URL, bandwidth caps).
 
-## Security & policies
+## 🔒 Security & policies
 
 - Security middleware: helmet, rate limiting, HPP, SSRF guard, CORS
 - Policy system gates max quality, concurrency, playlist limits, and features per plan (FREE vs PREMIUM)
 
-## Contributing
+## 🤝 Contributing
 
 PRs and issues are welcome. Keep changes focused, and include a short description, screenshots for UI changes, and steps to test.
 
-## Acknowledgements
+## 🙏 Acknowledgements
 
 - yt‑dlp – amazing open‑source downloader
 - ffmpeg / ffprobe – media swiss‑army knives
@@ -179,11 +199,11 @@ PRs and issues are welcome. Keep changes focused, and include a short descriptio
 
 ## 🇷🇸 Srpski (Serbian)
 
-### Opis
+### 📖 Opis
 
 Pumpaj Media Downloader je dvo‑modni downloader: Web aplikacija (Vite + React) i Desktop aplikacija (Electron) pokretana yt‑dlp + ffmpeg alatima, sa praćenjem napretka u realnom vremenu (SSE), pametnim redom poslova i modernim UI‑jem.
 
-### Ključne funkcije
+### ✨ Ključne funkcije
 
 - Analiza URL‑ova pomoću yt‑dlp i jasan prikaz Video / Audio / Thumbnail opcija
 - Serverski red poslova sa živim napretkom, otkazivanjem jednog posla ili svih
@@ -192,7 +212,7 @@ Pumpaj Media Downloader je dvo‑modni downloader: Web aplikacija (Vite + React)
 - Sistem politika (FREE vs PREMIUM) za ograničenje kvaliteta, funkcija i paralelizma
 - Lep, brz UI sa prečicama na tastaturi i status bedževima
 
-### Arhitektura
+### 🧱 Arhitektura
 
 - Frontend: Vite + React + TypeScript (port 5183, striktno)
 - Backend: Express + yt‑dlp + ffmpeg (podrazumevano 5176)
@@ -206,12 +226,12 @@ Struktura repozitorijuma (skraćeno):
 - `electron/` – Desktop ulazne tačke i build
 - `tools/` – skripte za razvoj (stop, clean, smoke, clean‑data)
 
-### Zahtevi
+### 📦 Zahtevi
 
 - Node.js >= 18.18
 - Windows je primarni cilj za desktop build; web radi na svim platformama
 
-### Brzi start (razvoj)
+### 🚀 Brzi start (razvoj)
 
 Instalacija zavisnosti:
 
@@ -254,7 +274,7 @@ Smoke test (zdravlje servera):
 npm run dev:smoke
 ```
 
-### Desktop (Electron)
+### 🖥️ Desktop (Electron)
 
 Razvoj sa IPC kontrolama:
 
@@ -268,14 +288,14 @@ Proizvodni build (Windows portable + zip):
 npm run dist:win
 ```
 
-### Web build
+### 🌐 Web build
 
 ```powershell
 npm run build
 npm run preview
 ```
 
-### Konfiguracija
+### ⚙️ Konfiguracija
 
 Frontend
 - `.env.local`: podesite `VITE_API_BASE` (npr. `http://localhost:5176`)
@@ -295,13 +315,13 @@ Direktorijum sa podacima (kanonski)
 - Na prvom startu server migrira fajlove sa starih putanja (npr. `server/server/data/`).
 - Verziona kontrola ignoriše ove fajlove; koristi `npm run dev:clean:data` za reset.
 
-### Prečice na tastaturi
+### ⌨️ Prečice na tastaturi
 
 - Ctrl+1..5 – promene tabova (Download / Queue / Batch / History / Settings)
 - Enter – Analyze (na Download tabu)
 - Ctrl+L – fokusira URL polje
 
-### Job API (server)
+### 🔌 Job API (server)
 
 - Start best video+audio: `POST /api/job/start/best { url, title } → { id }`
 - Start best audio: `POST /api/job/start/audio { url, title, format } → { id }`
@@ -314,7 +334,7 @@ Direktorijum sa podacima (kanonski)
    - `GET /api/jobs/settings` → `{ maxConcurrent, proxyUrl?, limitRateKbps? }`
    - `POST /api/jobs/settings { ... }` – čuva i primenjuje odmah
 
-### Rešavanje problema
+### 🧩 Rešavanje problema
 
 - Port 5183 zauzet (frontend)
    - Vite već radi. Pokreni:
@@ -332,12 +352,20 @@ Direktorijum sa podacima (kanonski)
 - Proxy / ograničenje brzine
    - Podesi u Settings u UI‑ju ili preko `POST /api/jobs/settings`.
 
-### Bezbednost i politike
+### 🔒 Bezbednost i politike
 
 - Middleware: helmet, rate limiting, HPP, zaštita od SSRF, CORS
 - Politike: ograničavaju maksimalni kvalitet, konkurentnost, veličinu plejlista i dostupne funkcije po planu (FREE/PREMIUM)
 
-### Doprinos
+### 🤝 Doprinos
+
+## 📸 Screenshots
+
+Add your screenshots to `docs/` and reference them here. Example placeholders (replace when ready):
+
+| Home | Analyze | Queue |
+|---|---|---|
+| ![Home](docs/screenshot-home.png) | ![Analyze](docs/screenshot-analyze.png) | ![Queue](docs/screenshot-queue.png) |
 
 Dobrodošli su PR‑ovi i issue‑i. Molimo pošaljite fokusirane izmene, kratak opis, screenshot za UI izmene i korake za testiranje.
 
