@@ -15,6 +15,7 @@ const Ctx = createContext<{ settings: ClientSettings; setSettings: (s: Partial<C
 
 export const SettingsProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [settings, setLocal] = useState<ClientSettings>(() => {
+    if (typeof window === 'undefined') return defaultSettings;
     try {
       const raw = localStorage.getItem('client:settings');
       return raw ? { ...defaultSettings, ...JSON.parse(raw) } : defaultSettings;

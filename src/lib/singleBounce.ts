@@ -2,7 +2,6 @@
 // Returns a cleanup function to stop the cycle.
 export function initRandomSingleBounce(selector = '.attention-icon', intervalMs = 2400) {
   let disposed = false;
-  let timer: number | undefined;
   let previousIndex = -1;
 
   const tick = () => {
@@ -25,7 +24,7 @@ export function initRandomSingleBounce(selector = '.attention-icon', intervalMs 
 
   // Prime immediately then cycle
   tick();
-  timer = window.setInterval(tick, intervalMs);
+  const timer = window.setInterval(tick, intervalMs);
 
   return () => {
     disposed = true;

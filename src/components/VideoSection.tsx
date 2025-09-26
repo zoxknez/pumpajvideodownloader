@@ -66,20 +66,20 @@ export const VideoSection: React.FC<VideoSectionProps> = ({ analysisData, onForm
       codec: fmt.codec,
       isHdr: fmt.isHdr,
       icon:
-  false
+        fmt.badge === 'PREMIUM'
           ? Crown
-          : fmt.badge === 'recommended'
+          : fmt.badge === 'RECOMMENDED'
           ? Zap
-          : fmt.badge === 'fast'
+          : fmt.badge === 'FAST'
           ? Shield
           : Play,
       badge: fmt.badge ? fmt.badge.toUpperCase() : undefined,
       color:
-  false
+        fmt.badge === 'PREMIUM'
           ? 'from-yellow-500 to-orange-500'
-          : fmt.badge === 'recommended'
+          : fmt.badge === 'RECOMMENDED'
           ? 'from-green-500 to-emerald-500'
-          : fmt.badge === 'fast'
+          : fmt.badge === 'FAST'
           ? 'from-blue-500 to-cyan-500'
           : 'from-purple-500 to-pink-500',
     }));
@@ -234,7 +234,7 @@ export const VideoSection: React.FC<VideoSectionProps> = ({ analysisData, onForm
         }
       );
       info('Download started');
-    } catch (e) {
+  } catch {
       // Fallback to direct format download when job start fails
       try {
         const fmt: any = (analysisData.formats || [])[selectedFormat] || (analysisData.formats || [])[0];

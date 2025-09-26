@@ -1,3 +1,4 @@
+/* eslint-disable react-refresh/only-export-components */
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import { API_BASE } from '../lib/api';
 
@@ -19,7 +20,10 @@ type AuthCtx = {
 const Ctx = createContext<AuthCtx | undefined>(undefined);
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
-  const [token, setToken] = useState<string | null>(() => localStorage.getItem('app:token'));
+  const [token, setToken] = useState<string | null>(() => {
+    if (typeof window === 'undefined') return null;
+    try { return localStorage.getItem('app:token'); } catch { return null; }
+  });
   const [me, setMe] = useState<User>(null);
   const [policy, setPolicy] = useState<Policy | null>(null);
 
@@ -60,7 +64,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setPolicy({ plan: 'FREE', maxHeight: 4320, maxAudioKbps: 320, playlistMax: 100, batchMax: 100, concurrentJobs: 3, allowSubtitles: true, allowChapters: true, allowMetadata: true });
       return;
     }
-    fetchMe(token).catch(() => { setToken(null); localStorage.removeItem('app:token'); });
+        fetchMe(token).catch(() => {
+          setToken(null);
+          try { localStorage.removeItem('app:token'); } catch {}
+        });
   }, [token, fetchMe]);
 
   const login = useCallback(async (username: string, email: string) => {
@@ -76,10 +83,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       const emailInput = emailInputRaw.trim() || fallbackEmail;
       const payload = `${encodeURIComponent(nameInput)}|${encodeURIComponent(emailInput)}`;
       const tok = `local:${payload}`;
-      setToken(tok);
-      localStorage.setItem('app:token', tok);
-      try { localStorage.setItem('app:lastUsername', nameInput); } catch {}
-      try { localStorage.setItem('app:lastEmail', emailInput); } catch {}
+  setToken(tok);
+  try { localStorage.setItem('app:token', tok); } catch {}
+  try { localStorage.setItem('app:lastUsername', nameInput); } catch {}
+  try { localStorage.setItem('app:lastEmail', emailInput); } catch {}
       setMe({ id: 'local', email: emailInput || undefined, username: nameInput || undefined, plan: 'FREE' });
       setPolicy({ plan: 'FREE', maxHeight: 4320, maxAudioKbps: 320, playlistMax: 100, batchMax: 100, concurrentJobs: 3, allowSubtitles: true, allowChapters: true, allowMetadata: true });
       return;
@@ -93,14 +100,20 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     if (!res.ok) throw new Error('Login failed');
     const data = await res.json();
     setToken(data.token);
-    localStorage.setItem('app:token', data.token);
+    try { localStorage.setItem('app:token', data.token); } catch {}
     try { localStorage.setItem('app:lastUsername', desiredUsername); } catch {}
     try { localStorage.setItem('app:lastEmail', desiredEmail); } catch {}
     await fetchMe(data.token);
   }, [fetchMe]);
 
   const logout = useCallback(() => {
-    setToken(null); setMe(null); setPolicy(null); localStorage.removeItem('app:token');
+    try {
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new Event('pumpaj:auth:logout'));
+      }
+    } catch {}
+    setToken(null); setMe(null); setPolicy(null);
+    try { localStorage.removeItem('app:token'); } catch {}
   }, []);
 
   const value = useMemo(() => ({ me, policy, token, login, logout, setToken }), [me, policy, token, login, logout]);
@@ -116,9 +129,11 @@ export function useAuth() {
 export function LoginGate({ children }: { children: React.ReactNode }) {
   const { me, login } = useAuth();
   const [username, setUsername] = useState<string>(() => {
+    if (typeof window === 'undefined') return '';
     try { return localStorage.getItem('app:lastUsername') || ''; } catch { return ''; }
   });
   const [email, setEmail] = useState<string>(() => {
+    if (typeof window === 'undefined') return '';
     try { return localStorage.getItem('app:lastEmail') || ''; } catch { return ''; }
   });
   const [error, setError] = useState<string>('');

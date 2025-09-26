@@ -35,8 +35,14 @@ export type AnalyzeResponse = {
 // 5) Otherwise, relative '' to use same-origin/proxy in web
 const API_BASE_RUNTIME = (() => {
   try {
-    const envBase = (import.meta.env.VITE_API_BASE as string | undefined) || undefined;
-    if (envBase) return envBase;
+    if (typeof import.meta !== 'undefined' && import.meta.env && typeof import.meta.env.VITE_API_BASE === 'string') {
+      const envBase = import.meta.env.VITE_API_BASE as string;
+      if (envBase) return envBase;
+    }
+  } catch {}
+  try {
+    const nextBase = (typeof process !== 'undefined' && process?.env?.NEXT_PUBLIC_API) ? String(process.env.NEXT_PUBLIC_API) : undefined;
+    if (nextBase) return nextBase;
   } catch {}
   try {
     const qs = typeof location !== 'undefined' ? new URLSearchParams(location.search) : undefined;

@@ -1,6 +1,7 @@
+/* eslint-disable react-refresh/only-export-components */
 import { StrictMode, useEffect } from 'react';
 import { createRoot } from 'react-dom/client';
-import App from './App.tsx';
+import App from './App';
 import { ToastProvider } from './components/ToastProvider';
 import { SettingsProvider } from './components/SettingsContext';
 import { ErrorBoundary } from './components/ErrorBoundary';

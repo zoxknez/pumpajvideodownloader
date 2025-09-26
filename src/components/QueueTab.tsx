@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Clock, Play, Trash2, ArrowUp, ArrowDown, RefreshCw, ChevronsUp, ChevronsDown, FastForward } from 'lucide-react';
 import { useToast } from './ToastProvider';
 
@@ -12,48 +12,49 @@ export const QueueTab: React.FC = () => {
   const listRef = useRef<HTMLDivElement | null>(null);
   const selectedIndex = useMemo(() => items.findIndex(i => i.id === selected), [items, selected]);
 
-  const load = async () => {
+  const load = useCallback(async () => {
     if (!isIpc) return;
     try {
       const r = await (window as any).api?.queueList?.();
       if (r?.ok && Array.isArray(r.items)) setItems(r.items.map((q: any) => ({ position: Number(q.position||0), id: String(q.id), title: String(q.title || q.url || q.id), url: String(q.url||''), mode: String(q.mode||'video'), format: String(q.format||'') })));
     } catch {}
-  };
+  }, [isIpc]);
 
   useEffect(() => {
+    if (!isIpc) return;
     load();
-    const id = setInterval(load, 4000);
-    return () => clearInterval(id);
-  }, []);
+    const id = window.setInterval(load, 4000);
+    return () => window.clearInterval(id);
+  }, [isIpc, load]);
 
-  const startNow = async (id?: string) => {
+  const startNow = useCallback(async (id?: string) => {
     if (!isIpc) return;
     const target = id || selected;
     if (!target) return;
     try { const r = await (window as any).api?.queueStartNow?.(target); if (r?.ok) { info('Started'); load(); } else error('Failed'); } catch { error('Failed'); }
-  };
-  const remove = async (id?: string) => {
+  }, [isIpc, selected, info, error, load]);
+  const remove = useCallback(async (id?: string) => {
     if (!isIpc) return;
     const target = id || selected;
     if (!target) return;
     try { const r = await (window as any).api?.queueRemove?.(target); if (r?.ok) { info('Removed'); load(); } else error('Failed'); } catch { error('Failed'); }
-  };
-  const move = async (delta: number) => {
+  }, [isIpc, selected, info, error, load]);
+  const move = useCallback(async (delta: number) => {
     if (!isIpc || !selected) return;
     const idx = items.findIndex(i => i.id === selected);
     if (idx < 0) return;
     const to = Math.max(0, Math.min(items.length - 1, idx + delta));
     if (to === idx) return;
     try { const r = await (window as any).api?.queueMove?.(selected, to); if (!r?.ok) error('Move failed'); else load(); } catch { error('Move failed'); }
-  };
-  const moveTo = async (to: number) => {
+  }, [isIpc, selected, items, error, load]);
+  const moveTo = useCallback(async (to: number) => {
     if (!isIpc || !selected) return;
     const idx = items.findIndex(i => i.id === selected);
     if (idx < 0 || to === idx) return;
     const clamped = Math.max(0, Math.min(items.length - 1, to));
     try { const r = await (window as any).api?.queueMove?.(selected, clamped); if (!r?.ok) error('Move failed'); else load(); } catch { error('Move failed'); }
-  };
-  const clearAll = async () => {
+  }, [isIpc, selected, items, error, load]);
+  const clearAll = useCallback(async () => {
     if (!isIpc) return;
     if (items.length === 0) return;
     const yes = window.confirm(`Remove all ${items.length} queued items?`);
@@ -64,12 +65,12 @@ export const QueueTab: React.FC = () => {
       setSelected(null);
       load();
     } catch { error('Failed to clear'); }
-  };
-  const startTop = async () => {
+  }, [isIpc, items, info, load, error]);
+  const startTop = useCallback(async () => {
     if (!isIpc) return;
     if (items.length === 0) return;
     try { const id = items[0].id; const r = await (window as any).api?.queueStartNow?.(id); if (r?.ok) { info('Started top'); load(); } else error('Failed'); } catch { error('Failed'); }
-  };
+  }, [isIpc, items, info, error, load]);
 
   // Keyboard controls
   useEffect(() => {
@@ -97,7 +98,7 @@ export const QueueTab: React.FC = () => {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [items, selected, selectedIndex]);
+  }, [items, selected, selectedIndex, startNow, remove, clearAll, move, moveTo]);
 
   const onRowClick = (id: string) => {
     setSelected(id);

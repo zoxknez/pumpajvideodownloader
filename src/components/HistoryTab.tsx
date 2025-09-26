@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { History as HistoryIcon, RefreshCw, Play, Trash2, RotateCcw, Clock, FileType, HardDrive, AlertCircle, CheckCircle, XCircle, Search, Copy, Download } from 'lucide-react';
 import { useToast } from './ToastProvider';
 import { desktopHistoryList, desktopHistoryClear, desktopHistoryRemove, revealPath, openPath } from '../lib/downloader';
+import { API_BASE } from '../lib/api';
 
 interface DownloadHistoryItem {
   id: string;
@@ -22,7 +23,7 @@ interface DownloadHistoryItem {
 }
 
 export const HistoryTab: React.FC = () => {
-  const api = import.meta.env.VITE_API_BASE || 'http://127.0.0.1:5176';
+  const api = API_BASE || 'http://127.0.0.1:5176';
   const isIpc = typeof window !== 'undefined' && !!(window as any).api;
   const { success, error: toastError, info } = useToast();
   const [items, setItems] = useState<DownloadHistoryItem[]>([]);

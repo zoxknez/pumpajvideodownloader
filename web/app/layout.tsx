@@ -1,3 +1,4 @@
+/* eslint-disable react-refresh/only-export-components */
 import './globals.css';
 
 export const metadata = {

@@ -101,6 +101,14 @@ Smoke test (server health):
 npm run dev:smoke
 ```
 
+### ✅ Pre-release verification
+
+```powershell
+npm run verify
+```
+
+Runs linting, type checks, desktop/web builds, and tests — identical to the CI pipeline.
+
 ## 🖥️ Desktop (Electron) development
 
 For a desktop experience with IPC controls:
@@ -121,9 +129,11 @@ This bundles the web UI, the prebuilt server, and binaries into a portable app.
 ## 🌐 Web build (static)
 
 ```powershell
-npm run build
+npm run build:all
 npm run preview
 ```
+
+`npm run build:all` first bundles the Vite desktop UI and then exports the Next.js web app, mirroring the production pipeline. See [`docs/DEPLOY.md`](docs/DEPLOY.md) for a full pre-release checklist (env vars, smoke tests, packaging steps).
 
 `vite build` outputs to `dist/`. `vite preview` serves the static build locally.
 
@@ -294,6 +304,14 @@ Smoke test (zdravlje servera):
 npm run dev:smoke
 ```
 
+### ✅ Verifikacija pre objave
+
+```powershell
+npm run verify
+```
+
+Pokreće lint, typecheck, buildove (desktop + web) i testove — isto što i CI.
+
 ### 🖥️ Desktop (Electron)
 
 Razvoj sa IPC kontrolama:
@@ -311,9 +329,11 @@ npm run dist:win
 ### 🌐 Web build
 
 ```powershell
-npm run build
+npm run build:all
 npm run preview
 ```
+
+`npm run build:all` prvo izgradi Vite desktop UI, a zatim Next.js web aplikaciju (isto kao CI). Nakon uspešnog builda, `npm run preview` služi statički sadržaj za finalnu proveru.
 
 ### ⚙️ Konfiguracija
 

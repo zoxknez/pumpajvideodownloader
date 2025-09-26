@@ -3,14 +3,14 @@ import { ThumbnailSection } from './components/ThumbnailSection';
 import { VideoSection } from './components/VideoSection';
 import { AudioSection } from './components/AudioSection';
 import { OptionsSection } from './components/OptionsSection';
-import { HistoryTab } from './components/HistoryTab.tsx';
+import { HistoryTab } from './components/HistoryTab';
 import { BatchTab } from './components/BatchTab';
 import { SettingsTab } from './components/SettingsTab';
 import { AnalysisResults } from './components/AnalysisResults';
-import { analyzeUrl, getJobsSettings, authHeaders } from './lib/api';
+import { API_BASE, analyzeUrl, getJobsSettings, authHeaders } from './lib/api';
 import { getDefaultDirHandle } from './lib/fsStore';
 import { Download, Search, Clipboard, Trash2, Sparkles, Settings, Monitor, History as HistoryIcon, Clock, Heart } from 'lucide-react';
-import pumpajLogo from './assets/pumpaj-logo.svg';
+const pumpajLogo = '/pumpaj-logo.svg';
 import { QueueTab } from './components/QueueTab';
 
 type MainTab = 'download' | 'queue' | 'history' | 'batch' | 'settings';
@@ -30,7 +30,7 @@ function App() {
   const handleAnalyzeRef = useRef<() => void>(() => {});
   const urlInputRef = useRef<HTMLInputElement | null>(null);
   const [ipcPaused, setIpcPaused] = useState<boolean>(false);
-  const apiBase = import.meta.env.VITE_API_BASE || 'http://127.0.0.1:5176';
+  const apiBase = API_BASE || 'http://127.0.0.1:5176';
   // Detect Electron IPC mode (desktop build exposes window.api in preload)
   const isIpc = typeof window !== 'undefined' && Boolean((window as any).api?.analyze || (window as any).api?.start);
 
@@ -69,6 +69,12 @@ function App() {
   }, [url]);
   useEffect(() => {
     try { localStorage.setItem('app:activeTab', activeMainTab); } catch {}
+  }, [activeMainTab]);
+
+  useEffect(() => {
+    try {
+      window.dispatchEvent(new CustomEvent('pumpaj:active-tab', { detail: activeMainTab }));
+    } catch {}
   }, [activeMainTab]);
 
   // Desktop: auto-fill URL when clipboard watcher emits a URL

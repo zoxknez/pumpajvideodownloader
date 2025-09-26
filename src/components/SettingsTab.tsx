@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Settings as SettingsIcon, Monitor, Download as DownloadIcon, Folder, Wifi, Cpu, Shield, Database, Zap, Activity } from 'lucide-react';
+import { Settings as SettingsIcon, Monitor, Download as DownloadIcon, Folder, Wifi, Cpu, Shield, Database, Zap, Activity, LogOut } from 'lucide-react';
 import { getJobsSettings, updateJobsSettings, API_BASE, authHeaders } from '../lib/api';
 import { useClientSettings } from './SettingsContext';
 import { useToast } from './ToastProvider';
@@ -60,12 +60,13 @@ export const SettingsTab: React.FC = () => {
   });
   const [serverStats, setServerStats] = useState<{ running: number; queued: number }>({ running: 0, queued: 0 });
   const apiBase = API_BASE; // use shared base (relative by default) to honor Vite proxy/backend dynamic port
-  const { me, policy } = useAuth();
+  const { me, policy, logout } = useAuth();
   const importInputRef = useRef<HTMLInputElement | null>(null);
   const [savedAt, setSavedAt] = useState<number | null>(null);
   const [defaultDirName, setDefaultDirName] = useState<string>('');
   const [serverInfo, setServerInfo] = useState<{ name?: string; version?: string; node?: string; platform?: string; ytDlp?: string; ffmpeg?: string; ffmpegVersion?: string; checks?: { ytdlpAvailable?: boolean; ffmpegAvailable?: boolean } } | null>(null);
   const [logLines, setLogLines] = useState<string[] | null>(null);
+  const [loggingOut, setLoggingOut] = useState(false);
   const isIpc = typeof window !== 'undefined' && Boolean((window as any).api?.analyze || (window as any).api?.start);
   const [ipcSettings, setIpcSettings] = useState<{ maxConcurrent: number; proxyUrl: string; proxyEnabled?: boolean; limitRateKib: number; connections: number; openOnComplete?: boolean; filenameTemplate?: string; subtitles?: { enabled?: boolean; embed?: boolean; languages?: string }; playlistItems?: string; clipboardWatcher?: boolean; pauseNewJobs?: boolean; autoAnalyzeClipboard?: boolean; closeToTray?: boolean; startMinimized?: boolean; launchOnStartup?: boolean; preventSleepWhileDownloading?: boolean; confirmOnQuitIfJobs?: boolean; resumeQueuedOnStartup?: boolean; downloadsRootDir?: string; skipExisting?: boolean; useDownloadArchive?: boolean } | null>(null);
   const [binStatus, setBinStatus] = useState<{ ytdlp: boolean; ffmpeg: boolean; ffprobe: boolean } | null>(null);
@@ -312,6 +313,31 @@ export const SettingsTab: React.FC = () => {
                   </div>
                 </div>
 
+                {me && (
+                  <div className="flex items-center justify-between rounded-xl border border-white/15 bg-white/5 px-4 py-4">
+                    <div>
+                      <div className="text-sm font-semibold text-white">Prijavljen kao</div>
+                      <div className="text-sm text-white/80">{me.username || me.email || me.id}</div>
+                    </div>
+                    <button
+                      onClick={async () => {
+                        if (loggingOut) return;
+                        setLoggingOut(true);
+                        try {
+                          logout();
+                        } finally {
+                          setLoggingOut(false);
+                        }
+                      }}
+                      className="flex items-center gap-2 rounded-lg border border-rose-500/40 bg-rose-500/15 px-4 py-2 text-sm font-semibold text-rose-100 hover:bg-rose-500/25 disabled:cursor-not-allowed disabled:opacity-60"
+                      disabled={loggingOut}
+                    >
+                      <LogOut className="h-4 w-4" />
+                      {loggingOut ? 'Odjava…' : 'Odjavi se'}
+                    </button>
+                  </div>
+                )}
+
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                   <SelectField label="Theme" value={settings.theme} onChange={(v) => handleSettingChange('theme', v)} options={[{ value: 'dark', label: 'Dark Theme' }, { value: 'light', label: 'Light Theme' }, { value: 'auto', label: 'Auto (System)' }]} />
                   <SelectField label="Language" value={settings.language} onChange={(v) => handleSettingChange('language', v)} options={[{ value: 'en', label: 'English' }, { value: 'es', label: 'Spanish' }, { value: 'fr', label: 'French' }, { value: 'de', label: 'German' }, { value: 'sr', label: 'Serbian' }]} />
@@ -399,9 +425,9 @@ export const SettingsTab: React.FC = () => {
                 <div className="mt-8 p-6 bg-red-500/10 border border-red-500/30 rounded-xl">
                   <h3 className="text-red-400 font-semibold mb-3 flex items-center gap-2"><Database className="w-5 h-5" />Data Management</h3>
                   <div className="space-y-3">
-                    <button onClick={async () => { try { const api = import.meta.env.VITE_API_BASE || 'http://localhost:5176'; const r = await fetch(`${api}/api/history`, { method: 'DELETE' }); if (!r.ok) throw new Error('failed'); success('History cleared'); } catch { error('Failed to clear history'); } }} className="w-full px-4 py-3 bg-red-500/20 hover:bg-red-500/30 border border-red-500/30 rounded-xl text-red-400 transition-all duration-300">Clear All Download History</button>
-                    <button onClick={async () => { try { const api = import.meta.env.VITE_API_BASE || 'http://localhost:5176'; const r = await fetch(`${api}/api/jobs/cleanup-temp`, { method: 'POST' }); const j = await r.json().catch(() => ({})); if (!r.ok) throw new Error('failed'); success(`Temporary files cleaned${typeof j.removed === 'number' ? `, removed ${j.removed}` : ''}`); } catch { error('Failed to clean temp files'); } }} className="w-full px-4 py-3 bg-red-500/20 hover:bg-red-500/30 border border-red-500/30 rounded-xl text-red-400 transition-all duration-300">Clear All Temporary Files</button>
-                    <button disabled={(serverStats.running + serverStats.queued) > 0} title={(serverStats.running + serverStats.queued) > 0 ? 'Stop or finish jobs before resetting' : ''} onClick={async () => { try { const api = import.meta.env.VITE_API_BASE || 'http://localhost:5176'; const r = await fetch(`${api}/api/jobs/settings/reset`, { method: 'POST' }); const j = await r.json().catch(() => ({})); if (!r.ok) throw new Error('failed'); setSettings((prev) => ({ ...prev, serverMaxConcurrent: Number(j.maxConcurrent ?? 2), serverProxyUrl: String(j.proxyUrl || ''), serverLimitRateKbps: Number(j.limitRateKbps || 0) })); success('All server settings reset'); } catch { error('Failed to reset settings'); } }} className="w-full px-4 py-3 bg-red-500/20 hover:bg-red-500/30 border border-red-500/30 rounded-xl text-red-400 transition-all duration-300">Reset All Settings</button>
+                    <button onClick={async () => { try { const api = apiBase || 'http://localhost:5176'; const r = await fetch(`${api}/api/history`, { method: 'DELETE' }); if (!r.ok) throw new Error('failed'); success('History cleared'); } catch { error('Failed to clear history'); } }} className="w-full px-4 py-3 bg-red-500/20 hover:bg-red-500/30 border border-red-500/30 rounded-xl text-red-400 transition-all duration-300">Clear All Download History</button>
+                    <button onClick={async () => { try { const api = apiBase || 'http://localhost:5176'; const r = await fetch(`${api}/api/jobs/cleanup-temp`, { method: 'POST' }); const j = await r.json().catch(() => ({})); if (!r.ok) throw new Error('failed'); success(`Temporary files cleaned${typeof j.removed === 'number' ? `, removed ${j.removed}` : ''}`); } catch { error('Failed to clean temp files'); } }} className="w-full px-4 py-3 bg-red-500/20 hover:bg-red-500/30 border border-red-500/30 rounded-xl text-red-400 transition-all duration-300">Clear All Temporary Files</button>
+                    <button disabled={(serverStats.running + serverStats.queued) > 0} title={(serverStats.running + serverStats.queued) > 0 ? 'Stop or finish jobs before resetting' : ''} onClick={async () => { try { const api = apiBase || 'http://localhost:5176'; const r = await fetch(`${api}/api/jobs/settings/reset`, { method: 'POST' }); const j = await r.json().catch(() => ({})); if (!r.ok) throw new Error('failed'); setSettings((prev) => ({ ...prev, serverMaxConcurrent: Number(j.maxConcurrent ?? 2), serverProxyUrl: String(j.proxyUrl || ''), serverLimitRateKbps: Number(j.limitRateKbps || 0) })); success('All server settings reset'); } catch { error('Failed to reset settings'); } }} className="w-full px-4 py-3 bg-red-500/20 hover:bg-red-500/30 border border-red-500/30 rounded-xl text-red-400 transition-all duration-300">Reset All Settings</button>
                   </div>
                 </div>
               </div>
