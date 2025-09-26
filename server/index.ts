@@ -1,5 +1,5 @@
 import express, { type Response, type NextFunction } from 'express';
-import rateLimit from 'express-rate-limit';
+import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
 import cors from 'cors';
 import ytdlp from 'youtube-dl-exec';
 import path from 'node:path';
@@ -454,7 +454,11 @@ const proxyLimiter = rateLimit({ windowMs: 60_000, max: (cfg.proxyDownloadMaxPer
 app.get('/api/proxy-download', requireAuth as any, proxyLimiter, proxyDownload);
 
 // Token-aware limiter for job and download endpoints
-const keyer = (req: any) => (req.user?.id ? String(req.user.id) : (req.ip || 'anon'));
+const keyer = (req: any) => {
+  if (req.user?.id) return String(req.user.id);
+  const ip = req.ip;
+  return ip ? ipKeyGenerator(ip) : 'anon';
+};
 const dlLimiter = rateLimit({ windowMs: 60_000, max: 20, keyGenerator: keyer });
 app.use(['/api/download', '/api/job'], requireAuth as any, dlLimiter);
 

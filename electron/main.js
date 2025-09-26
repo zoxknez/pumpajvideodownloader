@@ -975,6 +975,7 @@ async function createWindow() {
 
 app.on('ready', async () => {
   try { app.setAppUserModelId?.('com.downloader.app'); } catch {}
+  try { Menu.setApplicationMenu(null); } catch {}
   try {
     SETTINGS_PATH = path.join(app.getPath('userData'), 'settings.json');
     loadSettings();
