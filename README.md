@@ -130,8 +130,11 @@ npm run preview
 ## ⚙️ Configuration
 
 Frontend
-- `.env.local`: `VITE_API_BASE` to point the UI at a different backend
-   - Example: `VITE_API_BASE=http://localhost:5176`
+- `.env.local`
+   - `VITE_API_BASE=http://localhost:5176` (optional override for the legacy Vite UI)
+   - `NEXT_PUBLIC_SUPABASE_URL=https://<project>.supabase.co`
+   - `NEXT_PUBLIC_SUPABASE_ANON_KEY=<anon-key>`
+   - `NEXT_PUBLIC_API=http://localhost:5176` (frontend → backend bridge for the Next.js web app)
    - At runtime the app also auto‑detects the backend: query param `?apiBase=`, `window.__API_BASE`, and file:// heuristic for desktop
 
 Backend (environment)
