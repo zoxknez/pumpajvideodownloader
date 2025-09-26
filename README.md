@@ -199,6 +199,20 @@ PRs and issues are welcome. Keep changes focused, and include a short descriptio
 - ffmpeg / ffprobe – media swiss‑army knives
 - Vite + React – the modern web dev stack
 
+## 📸 Screenshots
+
+Real app UI, captured from the current build:
+
+<div align="center">
+
+<img src="docs/pumpaj-home.jpg" alt="Home screen (idle)" width="900" />
+
+<br /><br />
+
+<img src="docs/pumpaj-analysis.jpg" alt="Analysis completed with video/audio options" width="900" />
+
+</div>
+
 ## 🇷🇸 Srpski (Serbian)
 
 ### 📖 Opis
