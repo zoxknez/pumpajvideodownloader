@@ -10,6 +10,7 @@
    </p>
 
    <p>
+         <a href="https://github.com/zoxknez/pumpajvideodownloader/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/zoxknez/pumpajvideodownloader/actions/workflows/ci.yml/badge.svg" /></a>
       <a href="https://img.shields.io/badge/Node-%3E%3D18.18-339933?logo=node.js&logoColor=white"><img alt="Node" src="https://img.shields.io/badge/Node-%3E%3D18.18-339933?logo=node.js&logoColor=white" /></a>
       <a href="https://vitejs.dev"><img alt="Vite" src="https://img.shields.io/badge/Vite-5.x-646CFF?logo=vite&logoColor=white" /></a>
       <a href="https://react.dev"><img alt="React" src="https://img.shields.io/badge/React-18-61DAFB?logo=react&logoColor=white" /></a>
@@ -18,6 +19,7 @@
       <img alt="yt-dlp" src="https://img.shields.io/badge/yt--dlp-latest-FF0000?logo=youtube&logoColor=white" />
       <img alt="FFmpeg" src="https://img.shields.io/badge/FFmpeg-static-007808?logo=ffmpeg&logoColor=white" />
       <img alt="Windows" src="https://img.shields.io/badge/Windows-10/11-0078D6?logo=windows&logoColor=white" />
+         <a href="https://www.paypal.com/paypalme/o0o0o0o0o0o0o"><img alt="Donate" src="https://img.shields.io/badge/Donate-PayPal-FFC439?logo=paypal&logoColor=003087" /></a>
    </p>
 
    <p>
