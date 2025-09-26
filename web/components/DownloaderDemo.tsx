@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { getSupabase } from '@/lib/supabaseClient';
 import type { AuthChangeEvent, Session } from '@supabase/supabase-js';
 import { postJSON, downloadJobFile } from '@/lib/api';
@@ -14,6 +14,21 @@ export default function DownloaderDemo() {
   const [session, setSession] = useState<Session | null>(null);
   const [message, setMessage] = useState('');
   const sseRef = useRef<{ close: () => void } | null>(null);
+
+  const isWorking = useMemo(() => ['queued', 'running', 'processing', 'downloading'].includes(stage), [stage]);
+  const stageLabel = useMemo(() => {
+    const mapping: Record<string, string> = {
+      idle: 'Idle • awaiting URL',
+      queued: 'Queued • waiting for an available slot',
+      running: 'Downloading • gathering chunks',
+      processing: 'Processing • finishing touches',
+      downloading: 'Downloading',
+      ended: 'Finished • ready to download',
+      error: 'Error',
+    };
+    return mapping[stage] ?? stage;
+  }, [stage]);
+  const canStart = Boolean(token && url.trim());
 
   useEffect(() => {
     const supabase = getSupabase();
@@ -91,39 +106,84 @@ export default function DownloaderDemo() {
   }
 
   return (
-    <div className="max-w-xl mx-auto p-4 space-y-3">
-      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-        <div className="text-sm opacity-80">
+    <div className="pumpaj-card">
+      <section className="pumpaj-hero">
+        <img src="/pumpaj-heart.svg" alt="Pumpaj" />
+        <div>
+          <h1 className="pumpaj-title">Pumpaj Media Downloader</h1>
+          <p className="pumpaj-subtitle">
+            Premium web companion za tvoje Railway backend procese. Analiziraj YouTube URL, isprati napredak u realnom vremenu
+            i preuzmi gotove fajlove iz pregledača.
+          </p>
+        </div>
+        <div className="pumpaj-status">
+          <span>{session ? `Signed in as ${session.user.email}` : 'You are not signed in'}</span>
+        </div>
+        <div className="pumpaj-footer">
           {session ? (
-            <span>Prijavljeni: <strong>{session.user.email}</strong></span>
+            <button onClick={logout} className="pumpaj-button" style={{ padding: '0.7rem 1.8rem', width: 'fit-content' }}>
+              Sign out
+            </button>
           ) : (
-            <span className="text-red-600">Niste prijavljeni</span>
+            <a href="/login">Sign in to start a job</a>
           )}
         </div>
-        <div className="flex gap-2">
-          {!session && (
-            <a href="/login" className="text-blue-600 underline">Prijava / Registracija</a>
-          )}
-          {session && (
-            <button className="px-3 py-1 rounded bg-gray-200 hover:bg-gray-300" onClick={logout}>Odjava</button>
-          )}
+      </section>
+
+      <section className="pumpaj-form" aria-live="polite">
+        <label className="pumpaj-label">
+          Video URL
+          <input
+            className="pumpaj-input"
+            placeholder="https://www.youtube.com/watch?v=..."
+            value={url}
+            onChange={(e) => setUrl(e.target.value)}
+            inputMode="url"
+          />
+        </label>
+        <label className="pumpaj-label">
+          Output name (without extension)
+          <input
+            className="pumpaj-input"
+            placeholder="my-video"
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+          />
+        </label>
+
+        <div className="pumpaj-actions">
+          <button className="pumpaj-button" onClick={startJob} disabled={!canStart || isWorking}>
+            {isWorking ? 'Working…' : 'Start download'}
+          </button>
+          <div className="pumpaj-progress" role="status">
+            <span className="pumpaj-progress-pill">{stageLabel}</span>
+            <div className="pumpaj-progress-bar" aria-hidden="true">
+              <div className="pumpaj-progress-fill" style={{ width: `${Math.max(0, Math.min(100, progress))}%` }} />
+            </div>
+            <span style={{ fontSize: '0.9rem', color: 'rgba(248,250,252,0.75)' }}>{Math.floor(progress)}%</span>
+          </div>
         </div>
-      </div>
-      <input className="w-full border rounded p-2" placeholder="https://…" value={url} onChange={e=>setUrl(e.target.value)} />
-      <input className="w-full border rounded p-2" placeholder="Naziv fajla bez ekstenzije" value={title} onChange={e=>setTitle(e.target.value)} />
-      <div className="flex items-center gap-2">
-        <button className="px-4 py-2 rounded bg-blue-600 text-white" onClick={startJob} disabled={!url || !token}>
-          Start
-        </button>
-        <div className="text-sm opacity-80">Stage: {stage} | {Math.floor(progress)}%</div>
-      </div>
-      {jobId && stage === 'ended' && (
-        <button className="px-4 py-2 rounded bg-green-600 text-white" onClick={()=>downloadJobFile(jobId)}>
-          Download
-        </button>
-      )}
-      {!token && <div className="text-sm text-red-600">Uloguj se da bi startovao job.</div>}
-      {message && <div className="text-sm text-orange-600">{message}</div>}
+
+        {jobId && stage === 'ended' && (
+          <button className="pumpaj-button" onClick={() => downloadJobFile(jobId)} style={{ alignSelf: 'flex-start' }}>
+            Download ready file
+          </button>
+        )}
+
+        {!token && (
+          <div className="pumpaj-message error">
+            Please sign in to Supabase before starting a job.
+          </div>
+        )}
+
+        {message && (
+          <div className={`pumpaj-message ${stage === 'error' ? 'error' : 'success'}`}>{message}</div>
+        )}
+
+        <div className="pumpaj-footer">
+          Having trouble? Check Railway logs or verify that yt-dlp/ffmpeg binaries are available in the server image.
+        </div>
+      </section>
     </div>
   );
 }
