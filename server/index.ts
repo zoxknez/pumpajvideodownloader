@@ -94,6 +94,40 @@ try {
   if (saved.limitRateKbps && Number.isFinite(saved.limitRateKbps)) LIMIT_RATE = Math.max(0, Math.floor(saved.limitRateKbps));
 } catch {}
 
+// Helper: safe/truncated filenames for headers
+function trunc(s: string, n = 100) { return s.length > n ? s.slice(0, n) : s; }
+function safeName(input: string, max = 100) { return trunc((input || '').replace(/[\n\r"\\]/g, '').replace(/[^\w.-]+/g, '_'), max); }
+
+// Helper: best-effort disk free check (returns bytes or -1 if unknown)
+function getFreeDiskBytes(dir: string): number {
+  try {
+    if (process.platform !== 'win32') {
+      const out = spawnSync('df', ['-k', dir], { encoding: 'utf8' });
+      if (out.status === 0) {
+        const lines = String(out.stdout || '').trim().split(/\r?\n/);
+        const data = lines[lines.length - 1]?.trim().split(/\s+/);
+        const availKb = Number(data?.[3] || 0);
+        if (Number.isFinite(availKb)) return availKb * 1024;
+      }
+    } else {
+      const out = spawnSync('wmic', ['logicaldisk', 'get', 'size,freespace,caption'], { encoding: 'utf8' });
+      if (out.status === 0) {
+        const lines = String(out.stdout || '').trim().split(/\r?\n/).slice(1);
+        // pick the drive letter of the dir
+        const drive = path.parse(path.resolve(dir)).root.replace(/\\$/, '');
+        for (const ln of lines) {
+          const parts = ln.trim().split(/\s+/);
+          if (parts.length >= 3 && ln.includes(drive)) {
+            const free = Number(parts[1]);
+            if (Number.isFinite(free)) return free;
+          }
+        }
+      }
+    }
+  } catch {}
+  return -1;
+}
+
 // ytdlp is a function that runs the yt-dlp binary; the package manages the binary on Windows.
 // Note: Do not enable compression() globally for streaming routes that proxy or pipe binary content.
 
@@ -367,7 +401,8 @@ app.post('/api/jobs/settings/reset', requireAuth as any, (_req, res) => {
 app.get('/api/progress/:id', requireAuth as any, (req, res) => {
   const id = req.params.id;
   res.setHeader('Content-Type', 'text/event-stream');
-  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Cache-Control', 'no-store');
+  res.setHeader('X-Accel-Buffering', 'no');
   res.setHeader('Connection', 'keep-alive');
   res.flushHeaders?.();
   addSseListener(id, res);
@@ -417,6 +452,11 @@ app.post('/api/analyze', requireAuth as any, async (req: any, res, next: NextFun
 // Simple proxy to stream a direct media URL to the browser as an attachment
 const proxyLimiter = rateLimit({ windowMs: 60_000, max: (cfg.proxyDownloadMaxPerMin ?? 60) });
 app.get('/api/proxy-download', requireAuth as any, proxyLimiter, proxyDownload);
+
+// Token-aware limiter for job and download endpoints
+const keyer = (req: any) => (req.user?.id ? String(req.user.id) : (req.ip || 'anon'));
+const dlLimiter = rateLimit({ windowMs: 60_000, max: 20, keyGenerator: keyer });
+app.use(['/api/download', '/api/job'], requireAuth as any, dlLimiter);
 
 // Resolve a direct URL for a given format ID using yt-dlp (-g)
 app.post('/api/get-url', requireAuth as any, async (req, res, next: NextFunction) => {
@@ -530,7 +570,7 @@ app.get('/api/download/best', requireAuth as any, async (req: any, res) => {
   const ext = path.extname(produced).toLowerCase();
   const videoType = ext === '.mkv' ? 'video/x-matroska' : ext === '.webm' ? 'video/webm' : 'video/mp4';
   res.setHeader('Content-Type', videoType);
-  const safe = (title || 'video').replace(/[^\w.-]+/g, '_');
+  const safe = safeName(title || 'video');
   res.setHeader('Content-Disposition', `attachment; filename="${safe}${ext}"`);
     res.setHeader('Content-Length', String(stat.size));
   if (req.method === 'HEAD') { return res.end(); }
@@ -611,9 +651,9 @@ app.get('/api/download/chapter', requireAuth as any, async (req: any, res) => {
     const full = path.join(tmp, produced);
     const stat = fs.statSync(full);
     res.setHeader('Content-Type', /\.mkv$/i.test(full) ? 'video/x-matroska' : /\.webm$/i.test(full) ? 'video/webm' : 'video/mp4');
-    const safeBase = (title || 'clip').replace(/[^\w.-]+/g, '_');
-    const safeName = (name || 'chapter').replace(/[^\w.-]+/g, '_');
-    res.setHeader('Content-Disposition', `attachment; filename="${safeBase}.${index}_${safeName}${path.extname(full)}"`);
+  const safeBase = safeName(String(title || 'clip'));
+  const safeChap = safeName(String(name || 'chapter'));
+  res.setHeader('Content-Disposition', `attachment; filename="${safeBase}.${index}_${safeChap}${path.extname(full)}"`);
     res.setHeader('Content-Length', String(stat.size));
     if (req.method === 'HEAD') { return res.end(); }
     const stream = fs.createReadStream(full);
@@ -706,8 +746,8 @@ app.get('/api/download/audio', requireAuth as any, async (req: any, res) => {
   const full = path.join(tmp, produced);
     const stat = fs.statSync(full);
     const isMp3 = /\.mp3$/i.test(produced);
-  res.setHeader('Content-Type', isMp3 ? 'audio/mpeg' : 'audio/mp4');
-  const safe = (title || 'audio').replace(/[^\w.-]+/g, '_');
+    res.setHeader('Content-Type', isMp3 ? 'audio/mpeg' : 'audio/mp4');
+    const safe = safeName(title || 'audio');
     const ext = isMp3 ? 'mp3' : 'm4a';
     res.setHeader('Content-Disposition', `attachment; filename="${safe}.${ext}"`);
     res.setHeader('Content-Length', String(stat.size));
@@ -753,6 +793,11 @@ app.post('/api/job/start/best', requireAuth as any, async (req: any, res: Respon
     const tmpDir = os.tmpdir();
     const tmpId = randomUUID();
   const outPath = path.join(fs.realpathSync(tmpDir), `${tmpId}.%(ext)s`);
+    // disk pressure guard: require at least 200MB free if detectable
+    try {
+      const free = getFreeDiskBytes(tmpDir);
+      if (free > -1 && free < 200 * 1024 * 1024) return res.status(507).json({ error: 'INSUFFICIENT_STORAGE' });
+    } catch {}
     const hist = appendHistory({
       title,
       url: sourceUrl,
@@ -856,6 +901,10 @@ app.post('/api/job/start/audio', requireAuth as any, async (req: any, res: Respo
     const tmpDir = os.tmpdir();
     const tmpId = randomUUID();
   const outPath = path.join(fs.realpathSync(tmpDir), `${tmpId}.%(ext)s`);
+    try {
+      const free = getFreeDiskBytes(tmpDir);
+      if (free > -1 && free < 200 * 1024 * 1024) return res.status(507).json({ error: 'INSUFFICIENT_STORAGE' });
+    } catch {}
     const hist = appendHistory({
       title,
       url: sourceUrl,
@@ -970,6 +1019,9 @@ app.post('/api/job/cancel/:id', requireAuth as any, (req, res) => {
   }
   try {
     job.child?.kill('SIGTERM');
+    // fallback SIGKILL after 5s if needed
+    const pid = job.child?.pid;
+    if (pid && !job.child?.killed) setTimeout(() => { try { process.kill(pid, 'SIGKILL'); } catch {} }, 5000);
     updateHistory(id, { status: 'canceled' });
   clearHistoryThrottle(id);
     emitProgress(id, { stage: 'canceled' });
@@ -1002,6 +1054,10 @@ app.post('/api/jobs/cancel-all', requireAuth as any, (_req, res) => {
   for (const id of Array.from(running)) {
     const job = jobs.get(id);
     try { job?.child?.kill('SIGTERM'); } catch {}
+    try {
+      const pid = job?.child?.pid;
+      if (pid && !job?.child?.killed) setTimeout(() => { try { process.kill(pid, 'SIGKILL'); } catch {} }, 5000);
+    } catch {}
     try { running.delete(id); } catch {}
     updateHistory(id, { status: 'canceled' });
   clearHistoryThrottle(id);
@@ -1052,6 +1108,8 @@ app.get('/api/job/file/:id', requireAuth as any, (req, res) => {
           res.setHeader('Content-Range', `bytes ${start}-${end}/${stat.size}`);
           res.setHeader('Content-Length', String(end - start + 1));
           const stream = fs.createReadStream(full, { start, end });
+          const ender = () => { try { stream.destroy(); } catch {} };
+          res.on('close', ender); res.on('aborted', ender);
           stream.pipe(res);
           stream.on('close', () => {
             // do not delete file on partial probe
@@ -1061,6 +1119,8 @@ app.get('/api/job/file/:id', requireAuth as any, (req, res) => {
       }
     }
     const stream = fs.createReadStream(full);
+    const ender = () => { try { stream.destroy(); } catch {} };
+    res.on('close', ender); res.on('aborted', ender);
     stream.pipe(res);
     stream.on('close', () => {
       // Cleanup
@@ -1085,6 +1145,10 @@ app.post('/api/job/start/clip', requireAuth as any, async (req: any, res: Respon
     const tmpDir = os.tmpdir();
     const tmpId = randomUUID();
     const outPath = path.join(fs.realpathSync(tmpDir), `${tmpId}.%(ext)s`);
+    try {
+      const free = getFreeDiskBytes(tmpDir);
+      if (free > -1 && free < 200 * 1024 * 1024) return res.status(507).json({ error: 'INSUFFICIENT_STORAGE' });
+    } catch {}
   const hist = appendHistory({ title, url: sourceUrl, type: 'video', format: 'MP4', status: 'queued' });
   const job: Job = { id: hist.id, type: 'video', tmpId, tmpDir, userId: (req.user?.id || 'anon'), concurrencyCap: policyFor(req.user?.plan).concurrentJobs };
     jobs.set(hist.id, job);
@@ -1167,6 +1231,10 @@ app.post('/api/job/start/embed-subs', requireAuth as any, async (req: any, res: 
     const tmpDir = os.tmpdir();
     const tmpId = randomUUID();
     const outPath = path.join(fs.realpathSync(tmpDir), `${tmpId}.%(ext)s`);
+    try {
+      const free = getFreeDiskBytes(tmpDir);
+      if (free > -1 && free < 200 * 1024 * 1024) return res.status(507).json({ error: 'INSUFFICIENT_STORAGE' });
+    } catch {}
   const hist = appendHistory({ title, url: sourceUrl, type: 'video', format: cont.toUpperCase(), status: 'queued' });
   const job: Job = { id: hist.id, type: 'video', tmpId, tmpDir, userId: (req.user?.id || 'anon'), concurrencyCap: policyFor(req.user?.plan).concurrentJobs };
     jobs.set(hist.id, job);
@@ -1252,6 +1320,10 @@ app.post('/api/job/start/convert', requireAuth as any, async (req: any, res: Res
     const tmpDir = os.tmpdir();
     const tmpId = randomUUID();
     const outPath = path.join(fs.realpathSync(tmpDir), `${tmpId}.%(ext)s`);
+    try {
+      const free = getFreeDiskBytes(tmpDir);
+      if (free > -1 && free < 200 * 1024 * 1024) return res.status(507).json({ error: 'INSUFFICIENT_STORAGE' });
+    } catch {}
   const hist = appendHistory({ title, url: sourceUrl, type: 'video', format: String(mergeOut).toUpperCase(), status: 'queued' });
   const job: Job = { id: hist.id, type: 'video', tmpId, tmpDir, userId: (req.user?.id || 'anon'), concurrencyCap: policyFor(req.user?.plan).concurrentJobs };
     jobs.set(hist.id, job);
@@ -1372,10 +1444,10 @@ app.get('/api/subtitles/download', requireAuth as any, async (req: any, res) => 
       try { if (fs.existsSync(outPath)) fs.unlinkSync(outPath); } catch {}
       return res.status(500).json({ error: 'convert_failed', details: ff.stderr || ff.stdout || '' });
     }
-    const stat = fs.statSync(outPath);
-    res.setHeader('Content-Type', outExt === 'srt' ? 'application/x-subrip; charset=utf-8' : 'text/vtt; charset=utf-8');
-    const safe = (title || 'subtitles').replace(/[^\w.-]+/g, '_');
-    res.setHeader('Content-Disposition', `attachment; filename="${safe}.${outExt}"`);
+  const stat = fs.statSync(outPath);
+  res.setHeader('Content-Type', outExt === 'srt' ? 'application/x-subrip; charset=utf-8' : 'text/vtt; charset=utf-8');
+  const safe = safeName(title || 'subtitles');
+  res.setHeader('Content-Disposition', `attachment; filename="${safe}.${outExt}"`);
     res.setHeader('Content-Length', String(stat.size));
     if (req.method === 'HEAD') { try { fs.unlinkSync(outPath); } catch {}; return res.end(); }
     const stream = fs.createReadStream(outPath);
@@ -1400,6 +1472,32 @@ app.post('/api/jobs/cleanup-temp', requireAuth as any, (_req, res) => {
   }
   res.json({ ok: true, removed });
 });
+
+// Lightweight metrics for dashboards
+app.get('/api/metrics', requireAuth as any, (_req, res) => {
+  const listeners = Array.from(sseListeners.values()).reduce((a, s) => a + s.size, 0);
+  res.json({ running: running.size, queued: waiting.length, listeners });
+});
+
+// Orphan temp reaper: remove produced files forgotten due to crashes/aborts
+const REAPER_MS = 10 * 60 * 1000; // 10 minutes
+setInterval(() => {
+  try {
+    for (const job of jobs.values()) {
+      if (!job.produced) continue;
+      const full = path.join(job.tmpDir, job.produced);
+      if (fs.existsSync(full)) {
+        const age = Date.now() - fs.statSync(full).mtimeMs;
+        if (age > REAPER_MS) {
+          try { fs.unlinkSync(full); } catch {}
+          try { jobs.delete(job.id); } catch {}
+        }
+      } else {
+        try { jobs.delete(job.id); } catch {}
+      }
+    }
+  } catch {}
+}, REAPER_MS);
 
 // Error middleware should be last
 app.use(errorHandler);
