@@ -1,73 +1,179 @@
-# Premium Downloader (Vite + Express + yt-dlp)
+<div align="center">
 
-## Run locally
+# Pumpaj Media Downloader
 
-Backend (Express + yt-dlp)
-- Path: `server/`
-- Port: `5176` (default). If you run on another port, set `VITE_API_BASE` in `.env.local` accordingly.
-- Dev: `npm run dev --prefix server`
-- Build/Start: `npm run build --prefix server`; `npm run start --prefix server`
-- CORS via `CORS_ORIGIN` env:
+Dual‑mode, premium‑grade media downloader. Web app (Vite + React) and Desktop app (Electron) powered by yt‑dlp + ffmpeg, with real‑time progress, smart queueing, and a clean, modern UI.
+
+</div>
+
+## Features at a glance
+
+- Analyze any supported URL via yt‑dlp and present clean Video / Audio / Thumbnails options
+- Server‑side job queue with live progress (SSE), cancel single job or Cancel All
+- Concurrency limits, temp‑file hygiene, and automatic cleanup
+- Desktop mode (Electron): embedded server, IPC controls (Open Downloads, Pause/Resume new jobs)
+- Policy system for feature limits (FREE vs PREMIUM)
+- Beautiful UI with quick actions, keyboard shortcuts, and status badges
+
+## Architecture
+
+- Frontend: Vite + React + TypeScript (port 5183, strict)
+- Backend: Express + yt‑dlp + ffmpeg (default port 5176)
+- Desktop: Electron wrapper with IPC, embedded Express server
+- Realtime: Server‑Sent Events (SSE) for progress updates
+- Storage: JSON files in `server/data/` (settings, users, history) with migration from legacy paths
+
+Repository layout highlights:
+
+- `src/` – React app components and client libs
+- `server/` – Express server, routes, and core utilities
+- `electron/` – Desktop entry, preload, and packaging
+- `tools/` – Dev scripts (stop, clean, smoke, clean‑data)
+
+## Requirements
+
+- Node.js >= 18.18 (LTS or newer)
+- Windows is the primary target for the desktop build; the web app runs cross‑platform
+
+## Quick start (development)
+
+Install dependencies (root manages the workspace and the server package):
+
+```powershell
+npm install
+```
+
+Start both frontend and backend (recommended):
+
+```powershell
+npm run dev:start:all
+```
+
+Start individually:
+
+```powershell
+# Frontend (Vite on http://localhost:5183)
+npm run dev:start:frontend
+
+# Backend (Express on http://localhost:5176)
+npm run dev:start:backend
+```
+
+Stop stuck dev ports and clean temp artifacts:
+
+```powershell
+npm run dev:stop
+npm run dev:clean
+```
+
+Start with a clean data slate (removes dist/, logs/, and server data):
+
+```powershell
+npm run dev:clean:data
+```
+
+Smoke test (server health):
+
+```powershell
+npm run dev:smoke
+```
+
+## Desktop (Electron) development
+
+For a desktop experience with IPC controls:
+
+```powershell
+# Build UI once in watch mode and run Electron
+npm run dev:ipc
+```
+
+Production build (Windows portable + zip):
+
+```powershell
+npm run dist:win
+```
+
+This bundles the web UI, the prebuilt server, and binaries into a portable app.
+
+## Web build (static)
+
+```powershell
+npm run build
+npm run preview
+```
+
+`vite build` outputs to `dist/`. `vite preview` serves the static build locally.
+
+## Configuration
+
+Frontend
+- `.env.local`: `VITE_API_BASE` to point the UI at a different backend
+   - Example: `VITE_API_BASE=http://localhost:5176`
+   - At runtime the app also auto‑detects the backend: query param `?apiBase=`, `window.__API_BASE`, and file:// heuristic for desktop
+
+Backend (environment)
+- CORS via `CORS_ORIGIN`:
    - Allow all (dev default): `CORS_ORIGIN=*`
    - Disable CORS: `CORS_ORIGIN=disabled`
-   - Allow list: `CORS_ORIGIN=http://localhost:5183,https://my.site`
+   - Comma allow‑list: `CORS_ORIGIN=http://localhost:5183,https://your.site`
 
-Frontend (Vite + React)
-- Port: `5183` (strict; change in `vite.config.ts` if needed)
-- Dev: `npm run dev`
+Data directory (canonical)
+- `server/data/` holds runtime JSON files:
+   - `settings.json` – server settings (port, limits, etc.)
+   - `history.json` – completed/transient jobs history
+   - `users.json` – user plans and identities
+- On first run, the server migrates old files from legacy paths (e.g., `server/server/data/`).
+- Git ignores these files; use `npm run dev:clean:data` to reset.
 
-### Try it
-- Stop any stuck dev ports: `npm run dev:stop`
-- Start backend: `npm run dev --prefix server` (listens on http://localhost:5176)
-- Start frontend: `npm run dev` (opens http://localhost:5183)
-- Open the app and paste a YouTube URL, then try Video/Audio/Thumbnails
+## Keyboard shortcuts
 
-Troubleshooting
-- Frontend error “Port 5183 is already in use”: a Vite instance already runs; run `npm run dev:stop` once, then start again.
-- Backend unreachable: verify `GET http://localhost:5176/health` returns `{ "ok": true }`.
-
-One-liner (dev, Windows PowerShell)
-- Start backend and frontend: `npm run dev:start:all`
-- Stop/clean ports (5176/5183): `npm run dev:stop` / `npm run dev:clean`
-- Quick smoke test (server): `npm run dev:smoke`
-
-Configuration
-- Frontend: `.env.local` ⇒ `VITE_API_BASE=http://localhost:5176`
-- Health check: `GET http://localhost:5176/health`
-
-## Features
-- Analyze YouTube URLs (yt-dlp JSON) and show curated Video/Audio/Thumbnails.
-- Server-driven downloads with a Job queue:
-   - Background jobs with SSE live progress (%/speed/ETA)
-   - Cancel single job or Cancel All
-   - Concurrency control (1–6) with server-side persistence
-   - Temp-file cleanup after download or cancel
-- Direct downloads via `/api/proxy-download` (when CORS/direct URLs allow).
+- Ctrl+1..5 – Switch tabs (Download / Queue / Batch / History / Settings)
+- Enter – Analyze (on Download tab)
+- Ctrl+L – Focus URL input
 
 ## Job API (server)
+
 - Start best video+audio: `POST /api/job/start/best { url, title } → { id }`
 - Start best audio: `POST /api/job/start/audio { url, title, format } → { id }`
 - Progress SSE: `GET /api/progress/:id` (events: `message`, `end`)
 - Cancel job: `POST /api/job/cancel/:id`
 - Cancel all: `POST /api/jobs/cancel-all`
-- Download file: `GET /api/job/file/:id` (supports `HEAD`; auto-cleans on stream close)
+- Download artifact: `GET /api/job/file/:id` (supports `HEAD`; auto‑cleans on stream close)
 - Metrics: `GET /api/jobs/metrics` → `{ running, queued, maxConcurrent }`
 - Settings:
-   - `GET /api/jobs/settings` → `{ maxConcurrent }`
-   - `POST /api/jobs/settings { maxConcurrent }` (persists; updates scheduler live)
-- Maintenance: `POST /api/jobs/cleanup-temp` → `{ ok, removed }`
+   - `GET /api/jobs/settings` → `{ maxConcurrent, proxyUrl?, limitRateKbps? }`
+   - `POST /api/jobs/settings { ... }` – persists and updates the scheduler live
 
-## UI highlights
-- Settings → Advanced: slider for “Jobs Queue” (server-side concurrency) + “Cleanup Temp Files”.
-- Header badges show Server health and Queue (running/max, queued).
-- History tab: live progress with stage/speed/ETA, Cancel, Cancel All, Retry.
+## Troubleshooting
 
-## Notes
-- Some formats returned by yt-dlp don’t expose a direct URL (dash/hls manifests). For those, use server jobs.
-- Binary requirements are managed by `youtube-dl-exec`; ffmpeg is bundled via `ffmpeg-static`.
+- Frontend port 5183 already in use
+   - A Vite instance is already running; run:
+      ```powershell
+      npm run dev:stop
+      ```
+- Backend unreachable from the UI
+   - Verify health:
+      ```powershell
+      curl http://localhost:5176/health
+      ```
+      Expect `{ "ok": true }`. If you run on a non‑default port, set `VITE_API_BASE`.
+- yt‑dlp / ffmpeg
+   - The server uses `youtube-dl-exec` and `ffmpeg-static`. Desktop builds bundle binaries. Ensure network access for yt‑dlp updates if needed.
+- Proxy/Rate limits
+   - Configure via Settings in the UI or POST to `/api/jobs/settings` (proxy URL, bandwidth caps).
 
-## VS Code tasks
-- Start both (dev): “dev: start all”
-- Start individually: “backend: start”, “frontend: start”
-- Stop dev ports: “all: stop (dev ports)”
-- Clean artifacts: “dev: clean”
+## Security & policies
+
+- Security middleware: helmet, rate limiting, HPP, SSRF guard, CORS
+- Policy system gates max quality, concurrency, playlist limits, and features per plan (FREE vs PREMIUM)
+
+## Contributing
+
+PRs and issues are welcome. Keep changes focused, and include a short description, screenshots for UI changes, and steps to test.
+
+## Acknowledgements
+
+- yt‑dlp – amazing open‑source downloader
+- ffmpeg / ffprobe – media swiss‑army knives
+- Vite + React – the modern web dev stack
+
