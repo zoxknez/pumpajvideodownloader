@@ -363,10 +363,10 @@ function App() {
                 href="https://www.paypal.com/paypalme/o0o0o0o0o0o0o"
                 target="_blank"
                 rel="noopener noreferrer"
-                className="text-base px-3.5 py-2 rounded-full border border-amber-500/40 bg-amber-500/15 text-amber-100 font-semibold hover:bg-amber-500/25 transition-colors flex items-center gap-1.5"
+                className="text-base px-3.5 py-2 rounded-full border border-amber-500/40 bg-amber-500/15 text-amber-100 font-semibold hover:bg-amber-500/25 transition-colors flex items-center gap-2"
                 title="Donate via PayPal"
               >
-                <Heart className="w-4 h-4" />
+                <Heart className="w-6 h-6" />
                 Donate
               </a>
               {isIpc ? (

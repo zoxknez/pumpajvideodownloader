@@ -4,6 +4,8 @@
 
    <h1>Pumpaj Media Downloader</h1>
 
+   [![Donate](https://img.shields.io/badge/Donate-PayPal-FFB000?logo=paypal&labelColor=002E7A&logoColor=white)](https://www.paypal.com/paypalme/o0o0o0o0o0o0o)
+
    <p>
       Dual‑mode, premium‑grade media downloader. Web app (Vite + React) and Desktop app (Electron)
       powered by yt‑dlp + ffmpeg, with real‑time progress, smart queueing, and a clean, modern UI.
