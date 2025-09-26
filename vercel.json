@@ -2,6 +2,5 @@
   "version": 2,
   "builds": [
     { "src": "web/package.json", "use": "@vercel/next" }
-  ],
-  "outputDirectory": "web/out"
+  ]
 }
