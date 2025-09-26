@@ -13,11 +13,12 @@
 
    <p>
          <a href="https://github.com/zoxknez/pumpajvideodownloader/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/zoxknez/pumpajvideodownloader/actions/workflows/ci.yml/badge.svg" /></a>
-      <a href="https://img.shields.io/badge/Node-%3E%3D18.18-339933?logo=node.js&logoColor=white"><img alt="Node" src="https://img.shields.io/badge/Node-%3E%3D18.18-339933?logo=node.js&logoColor=white" /></a>
-      <a href="https://vitejs.dev"><img alt="Vite" src="https://img.shields.io/badge/Vite-5.x-646CFF?logo=vite&logoColor=white" /></a>
-      <a href="https://react.dev"><img alt="React" src="https://img.shields.io/badge/React-18-61DAFB?logo=react&logoColor=white" /></a>
-      <a href="https://expressjs.com"><img alt="Express" src="https://img.shields.io/badge/Express-4.x-000000?logo=express&logoColor=white" /></a>
-      <a href="https://www.electronjs.org"><img alt="Electron" src="https://img.shields.io/badge/Electron-31-47848F?logo=electron&logoColor=white" /></a>
+   <a href="https://img.shields.io/badge/Node-%3E%3D18.18-339933?logo=node.js&logoColor=white"><img alt="Node" src="https://img.shields.io/badge/Node-%3E%3D18.18-339933?logo=node.js&logoColor=white" /></a>
+   <a href="https://vitejs.dev"><img alt="Vite" src="https://img.shields.io/badge/Vite-7.x-646CFF?logo=vite&logoColor=white" /></a>
+   <a href="https://nextjs.org"><img alt="Next" src="https://img.shields.io/badge/Next.js-15-000000?logo=next.js&logoColor=white" /></a>
+   <a href="https://react.dev"><img alt="React" src="https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=white" /></a>
+   <a href="https://expressjs.com"><img alt="Express" src="https://img.shields.io/badge/Express-5.x-000000?logo=express&logoColor=white" /></a>
+   <a href="https://www.electronjs.org"><img alt="Electron" src="https://img.shields.io/badge/Electron-38-47848F?logo=electron&logoColor=white" /></a>
       <img alt="yt-dlp" src="https://img.shields.io/badge/yt--dlp-latest-FF0000?logo=youtube&logoColor=white" />
       <img alt="FFmpeg" src="https://img.shields.io/badge/FFmpeg-static-007808?logo=ffmpeg&logoColor=white" />
       <img alt="Windows" src="https://img.shields.io/badge/Windows-10/11-0078D6?logo=windows&logoColor=white" />
