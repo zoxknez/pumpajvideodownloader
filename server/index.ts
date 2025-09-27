@@ -147,9 +147,10 @@ function getFreeDiskBytes(dir: string): number {
     if (process.platform !== 'win32') {
       const out = spawnSync('df', ['-k', dir], { encoding: 'utf8' });
       if (out.status === 0) {
-        const lines = String(out.stdout || '').trim().split(/\r?\n/);
-        const data = lines.at(-1)?.trim().split(/\s+/);
-        const availKb = Number(data?.[3] || 0);
+  const lines = String(out.stdout || '').trim().split(/\r?\n/);
+  const last = lines[lines.length - 1] || '';
+  const data = last.trim().split(/\s+/);
+  const availKb = Number(data[3] || 0);
         if (Number.isFinite(availKb)) return availKb * 1024;
       }
     } else {
