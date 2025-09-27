@@ -40,7 +40,7 @@ const log = getLogger('server');
 const cfg = loadConfig();
 const proxyDownload = createProxyDownloadHandler(cfg);
 
-const app = express();
+export const app = express();
 app.set('trust proxy', 1);
 applySecurity(app, process.env.CORS_ORIGIN);
 const limiter = rateLimit({ windowMs: 60_000, max: 120 });
@@ -1792,23 +1792,25 @@ app.get('/api/metrics', requireAuth as any, (_req, res) => {
 
 // Orphan temp reaper: remove produced files forgotten due to crashes/aborts
 const REAPER_MS = 10 * 60 * 1000; // 10 minutes
-setInterval(() => {
-  try {
-    for (const job of jobs.values()) {
-      if (!job.produced) continue;
-      const full = path.join(job.tmpDir, job.produced);
-      if (fs.existsSync(full)) {
-        const age = Date.now() - fs.statSync(full).mtimeMs;
-        if (age > REAPER_MS) {
-          try { fs.unlinkSync(full); } catch {}
+if (process.env.NODE_ENV !== 'test') {
+  setInterval(() => {
+    try {
+      for (const job of jobs.values()) {
+        if (!job.produced) continue;
+        const full = path.join(job.tmpDir, job.produced);
+        if (fs.existsSync(full)) {
+          const age = Date.now() - fs.statSync(full).mtimeMs;
+          if (age > REAPER_MS) {
+            try { fs.unlinkSync(full); } catch {}
+            try { jobs.delete(job.id); } catch {}
+          }
+        } else {
           try { jobs.delete(job.id); } catch {}
         }
-      } else {
-        try { jobs.delete(job.id); } catch {}
       }
-    }
-  } catch {}
-}, REAPER_MS);
+    } catch {}
+  }, REAPER_MS);
+}
 
 // Error middleware should be last
 app.use(errorHandler);
@@ -1848,10 +1850,12 @@ function startServerWithRetry(startPort: number, maxAttempts = 10): Promise<impo
 }
 
 const initialPort = Number(cfg.port || 5176);
-startServerWithRetry(initialPort).catch((e) => {
-  log.error('fatal_startup', e?.message || String(e));
-  process.exitCode = 1;
-});
+if (process.env.NODE_ENV !== 'test') {
+  startServerWithRetry(initialPort).catch((e) => {
+    log.error('fatal_startup', e?.message || String(e));
+    process.exitCode = 1;
+  });
+}
 
 // Graceful shutdown: cancel all jobs and cleanup temp files
 async function gracefulShutdown(signal: string) {

@@ -38,7 +38,7 @@
     "dev:ui": "vite build --watch",
     "dev:electron": "cross-env ELECTRON_DISABLE_SECURITY_WARNINGS=true electron ./electron/main.js",
     "dev:ipc": "concurrently -k \"npm:dev:ui\" \"npm:dev:electron\"",
-    "verify": "npm run lint && npm run typecheck && npm run typecheck:server && npm run build:server && npm run build:all && npm run test --workspaces=false --if-present",
+  "verify": "npm run lint && npm run typecheck && npm run typecheck:server && npm run build:server && npm run build:all && npm run test --workspaces=false --if-present && npm run test -w server --if-present",
     "dist:win": "npm run build && npx electron-builder --win portable zip"
   },
   "dependencies": {

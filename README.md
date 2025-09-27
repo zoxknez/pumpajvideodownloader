@@ -105,10 +105,18 @@ npm run dev:smoke
 ### ✅ Pre-release verification
 
 ```powershell
+npm run test -w server
 npm run verify
 ```
 
-Runs linting, type checks, desktop/web builds, and tests — identical to the CI pipeline.
+`npm run test -w server` pokreće brze API health testove (Vitest + Supertest) sa `NODE_ENV=test`. 
+`npm run verify` zatim pokriva lint, oba typechecka, buildove i sve testove, identično onome što prolazi u CI pipeline-u.
+
+## 🤖 Continuous integration
+
+- Svaki push na `main` i svaki Pull Request pokreće [CI workflow](https://github.com/zoxknez/pumpajvideodownloader/actions/workflows/ci.yml)
+- Workflow koristi Node 20, radi `npm ci`, zatim `npm run verify`, pa zato lokalno izvršavanje `verify` + `test -w server` garantuje zelen build
+- Artefakti se ne objavljuju iz CI-a (Railway/Vercel deploy se radi ručno prema [production runbooku](docs/production-setup.md)), ali izlaz iz CI-a služi kao gate pre merge-a/deploya
 
 ## 🖥️ Desktop (Electron) development
 

@@ -11,5 +11,5 @@
     "skipLibCheck": true,
     "outDir": "dist"
   },
-  "include": ["index.ts", "core/**/*.ts", "types/**/*.ts", "db/**/*.ts", "routes/**/*.ts", "middleware/**/*.ts"]
+  "include": ["index.ts", "core/**/*.ts", "types/**/*.ts", "db/**/*.ts", "routes/**/*.ts", "middleware/**/*.ts", "tests/**/*.ts"]
 }
