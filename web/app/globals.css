@@ -1,4 +1,4 @@
-@import '../../styles/pumpaj-theme.css';
+@import '../styles/pumpaj-theme.css';
 
 @tailwind base;
 @tailwind components;
