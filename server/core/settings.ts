@@ -35,9 +35,9 @@ export function readServerSettings(): ServerSettings {
     const j = JSON.parse(raw || '{}');
     return {
       maxConcurrent: Number.isFinite(j?.maxConcurrent) ? Number(j.maxConcurrent) : undefined,
-  proxyUrl: typeof j?.proxyUrl === 'string' && j.proxyUrl ? String(j.proxyUrl) : undefined,
-  limitRateKbps: Number.isFinite(j?.limitRateKbps) ? Number(j.limitRateKbps) : undefined,
-  lastPort: Number.isFinite(j?.lastPort) ? Number(j.lastPort) : undefined,
+      proxyUrl: typeof j?.proxyUrl === 'string' && j.proxyUrl ? String(j.proxyUrl) : undefined,
+      limitRateKbps: Number.isFinite(j?.limitRateKbps) ? Number(j.limitRateKbps) : undefined,
+      lastPort: Number.isFinite(j?.lastPort) ? Number(j.lastPort) : undefined,
     };
   } catch {
     return {};
