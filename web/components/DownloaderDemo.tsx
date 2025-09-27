@@ -118,7 +118,9 @@ export default function DownloaderDemo() {
         const transient = /timeout|fetch|network|temporar|503|502|504/.test(msg);
         if (attempt < maxAttempts && transient) {
           // backoff 250ms, 750ms
-          await new Promise((r) => setTimeout(r, 250 * attempt * (attempt === 1 ? 1 : 3))); // 250, 750
+          const waitMs = 250 * attempt * (attempt === 1 ? 1 : 3);
+          toastError(`Privremeni problem sa serverom. Pokušavam ponovo (${attempt}/${maxAttempts})…`, 'Ponovni pokušaj', { type: 'info', durationMs: Math.max(2000, waitMs + 500) } as any);
+          await new Promise((r) => setTimeout(r, waitMs)); // 250, 750
           continue;
         }
         setStage('error');
@@ -135,28 +137,41 @@ export default function DownloaderDemo() {
     }
     setJobId(resp.id);
     persistUrl(url.trim());
-  const headers: Record<string, string> = token ? { Authorization: `Bearer ${token}` } : {};
-  const endpoint = apiUrl(`/api/progress/${resp.id}`);
+    const headers: Record<string, string> = token ? { Authorization: `Bearer ${token}` } : {};
+    const endpoint = apiUrl(`/api/progress/${resp.id}`);
     const { sseSubscribe } = await import('@/utils/sseFetch');
-    try {
-      const handle = await sseSubscribe(
-        endpoint,
-        headers,
-        (msg) => {
-          if (typeof msg.progress === 'number') setProgress(msg.progress);
-          if (msg.stage) setStage(msg.stage);
-        },
-        () => {
-          setStage('ended');
-          setProgress(100);
+    // Blagi auto-retry za SSE subscribe (npr. kratki mrežni prekid)
+    const maxSseAttempts = 3;
+    let sseAttempt = 0;
+    async function trySubscribe(): Promise<void> {
+      sseAttempt++;
+      try {
+        const handle = await sseSubscribe(
+          endpoint,
+          headers,
+          (msg) => {
+            if (typeof msg.progress === 'number') setProgress(msg.progress);
+            if (msg.stage) setStage(msg.stage);
+          },
+          () => {
+            setStage('ended');
+            setProgress(100);
+          }
+        );
+        sseRef.current = handle;
+      } catch (err: any) {
+        if (sseAttempt < maxSseAttempts) {
+          const delay = Math.min(1000 * sseAttempt, 3000);
+          toastError(`Veza je prekinuta. Pokušaj ${sseAttempt + 1}/${maxSseAttempts} za ${delay}ms…`, 'Ponovno povezivanje', { type: 'info', durationMs: delay + 500 } as any);
+          await new Promise((r) => setTimeout(r, delay));
+          return trySubscribe();
         }
-      );
-      sseRef.current = handle;
-    } catch (err: any) {
-      setStage('error');
-      setMessage(err?.message || 'Greška u komunikaciji sa serverom.');
-      toastError(err?.message || 'Greška u komunikaciji sa serverom.', 'Greška');
+        setStage('error');
+        setMessage(err?.message || 'Greška u komunikaciji sa serverom.');
+        toastError(err?.message || 'Greška u komunikaciji sa serverom.', 'Greška');
+      }
     }
+    await trySubscribe();
   }
 
   async function logout() {
