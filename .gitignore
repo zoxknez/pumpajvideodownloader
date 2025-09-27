@@ -46,3 +46,7 @@ server/dist/
 .env
 *.env.local
 *.env.*.local
+.vercel
+!.env.example
+!server/.env.example
+!web/.env.example
