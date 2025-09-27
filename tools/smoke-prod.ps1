@@ -7,7 +7,9 @@ function Invoke-SmokeRequest {
   param(
     [string]$Label,
     [string]$Url,
-    [string]$Method = "GET"
+    [string]$Method = "GET",
+    [string]$ExpectContains,
+    [ScriptBlock]$Validate
   )
 
   Write-Host "Smoke: $Label"
@@ -29,6 +31,14 @@ function Invoke-SmokeRequest {
         Write-Host "  Content: $preview"
       }
     }
+    if ($ExpectContains) {
+      if (-not ($response.Content -like "*${ExpectContains}*")) {
+        throw "Expected content to contain '${ExpectContains}'"
+      }
+    }
+    if ($Validate) {
+      & $Validate $response
+    }
     return $true
   }
   catch {
@@ -42,8 +52,27 @@ function Invoke-SmokeRequest {
 
 $results = @()
 $results += Invoke-SmokeRequest -Label "Web" -Url $WebUrl
-$apiHealth = if ($ApiBase.EndsWith('/')) { "$ApiBase" + "health" } else { "$ApiBase/health" }
-$results += Invoke-SmokeRequest -Label "API /health" -Url $apiHealth
+$apiRoot = $ApiBase.TrimEnd('/')
+$results += Invoke-SmokeRequest -Label "API /" -Url $apiRoot -ExpectContains "Pumpaj API"
+$apiHealth = "$apiRoot/health"
+$results += Invoke-SmokeRequest -Label "API /health" -Url $apiHealth -Validate {
+  param($response)
+  $json = $response.Content | ConvertFrom-Json
+  if (-not $json.ok) {
+    throw "API health did not return ok:true"
+  }
+}
+$apiVersion = "$apiRoot/api/version"
+$results += Invoke-SmokeRequest -Label "API /api/version" -Url $apiVersion -Validate {
+  param($response)
+  $json = $response.Content | ConvertFrom-Json
+  if (-not $json.name) {
+    throw "API version response missing 'name'"
+  }
+  if (-not $json.node) {
+    throw "API version response missing 'node'"
+  }
+}
 
 if ($results -contains $false) {
   Write-Error "One or more smoke checks failed."

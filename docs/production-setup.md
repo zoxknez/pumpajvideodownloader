@@ -54,7 +54,7 @@ Brza automatizovana provera:
 npm run smoke:prod
 ```
 
-> GitHub Actions workflow [`smoke-prod.yml`](../.github/workflows/smoke-prod.yml) izvršava isti skript svako jutro u 06:00 UTC (i može se ručno pokrenuti) kako bi se rano detektovao pad produkcije.
+> GitHub Actions workflow [`smoke-prod.yml`](../.github/workflows/smoke-prod.yml) izvršava isti skript svako jutro u 06:00 UTC (i može se ručno pokrenuti). Proverava Vercel landing stranu, backend `/health` (`ok: true`) i `/api/version` strukturu kako bi se rano detektovao pad produkcije.
 
 ### 5. Bez Free/Premium plana
 Policy sistem trenutno tretira sve korisnike isto (default). Kasnija nadogradnja zahteva: dodavanje plan field u user repo + policy map.
