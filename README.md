@@ -12,7 +12,7 @@
    </p>
 
    <p>
-         <a href="https://github.com/zoxknez/pumpajvideodownloader/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/zoxknez/pumpajvideodownloader/actions/workflows/ci.yml/badge.svg" /></a>
+         <a href="https://github.com/o0o0o0o0o0o0o0o0o0o0o0o0o0o0o0o/pumpaj_video_downloader/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/o0o0o0o0o0o0o0o0o0o0o0o0o0o0o0o/pumpaj_video_downloader/actions/workflows/ci.yml/badge.svg" /></a>
    <a href="https://img.shields.io/badge/Node-%3E%3D18.18-339933?logo=node.js&logoColor=white"><img alt="Node" src="https://img.shields.io/badge/Node-%3E%3D18.18-339933?logo=node.js&logoColor=white" /></a>
    <a href="https://vitejs.dev"><img alt="Vite" src="https://img.shields.io/badge/Vite-7.x-646CFF?logo=vite&logoColor=white" /></a>
    <a href="https://nextjs.org"><img alt="Next" src="https://img.shields.io/badge/Next.js-15-000000?logo=next.js&logoColor=white" /></a>
@@ -120,10 +120,10 @@ npm run verify
 
 ## 🤖 Continuous integration
 
-- Svaki push na `main` i svaki Pull Request pokreće [CI workflow](https://github.com/zoxknez/pumpajvideodownloader/actions/workflows/ci.yml)
+- Svaki push na `main` i svaki Pull Request pokreće [CI workflow](https://github.com/o0o0o0o0o0o0o0o0o0o0o0o0o0o0o0o/pumpaj_video_downloader/actions/workflows/ci.yml)
 - Workflow koristi Node 20, radi `npm ci`, zatim `npm run verify`, pa zato lokalno izvršavanje `verify` + `test -w server` garantuje zelen build
 - Artefakti se ne objavljuju iz CI-a (Railway/Vercel deploy se radi ručno prema [production runbooku](docs/production-setup.md)), ali izlaz iz CI-a služi kao gate pre merge-a/deploya
-- Dnevni [Production Smoke Tests](https://github.com/zoxknez/pumpajvideodownloader/actions/workflows/smoke-prod.yml) workflow (06:00 UTC) + ručni trigger proveravaju da su Vercel frontend i Railway backend dostupni (`tools/smoke-prod.ps1` validira web landing, `/health` (`ok: true`) i `/api/version` meta podatke)
+- Dnevni [Production Smoke Tests](https://github.com/o0o0o0o0o0o0o0o0o0o0o0o0o0o0o0o/pumpaj_video_downloader/actions/workflows/smoke-prod.yml) workflow (06:00 UTC) + ručni trigger proveravaju da su Vercel frontend i Railway backend dostupni (`tools/smoke-prod.ps1` validira web landing, `/health` (`ok: true`) i `/api/version` meta podatke)
 
 ## 🖥️ Desktop (Electron) development
 

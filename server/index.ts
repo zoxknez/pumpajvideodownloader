@@ -398,7 +398,7 @@ ul{padding-left:1.2rem}li{margin-bottom:.75rem}a{color:#60a5fa;text-decoration:n
       <li><code>POST /api/job/start/best</code></li>
       <li><code>GET /api/progress/:id</code></li>
     </ul>
-    <p>Docs: <a href="https://github.com/zoxknez/pumpajvideodownloader#readme" target="_blank" rel="noopener">GitHub README</a></p>
+  <p>Docs: <a href="https://github.com/o0o0o0o0o0o0o0o0o0o0o0o0o0o0o0o/pumpaj_video_downloader#readme" target="_blank" rel="noopener">GitHub README</a></p>
   </div>
   <div class="links"><a href="/health">🚦 Health</a><a href="/ready">🟢 Ready</a><a href="/api/version">📦 API version</a></div>
 </main>
