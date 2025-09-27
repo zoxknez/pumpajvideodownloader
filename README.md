@@ -56,10 +56,16 @@ Repository layout highlights:
 
 ## 📦 Requirements
 
-- Node.js >= 18.18 (LTS or newer)
+- Node.js >= 20 (LTS). Repo sadrži `.nvmrc`, pa je dovoljno pokrenuti `nvm use` da preuzme tačnu verziju.
 - Windows is the primary target for the desktop build; the web app runs cross‑platform
 
 ## 🚀 Quick start (development)
+
+Select Node version:
+
+```powershell
+nvm use
+```
 
 Install dependencies (root manages the workspace and the server package):
 

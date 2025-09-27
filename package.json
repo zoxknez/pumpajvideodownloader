@@ -6,7 +6,7 @@
   "description": "Pumpaj media downloader desktop app (Electron + Vite)",
   "author": "NovPocetak",
   "engines": {
-    "node": ">=18.18"
+    "node": ">=20.0.0"
   },
   "workspaces": [
     "server",
