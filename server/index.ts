@@ -184,6 +184,54 @@ function makeHeaders(u: string): string[] {
 
 app.get('/health', (_req, res) => res.json({ ok: true }));
 app.get('/ready', (_req, res) => res.json({ ok: true }));
+app.get('/', (_req, res) => {
+  res.type('text/html').send(`<!doctype html>
+    <html lang="en">
+      <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width,initial-scale=1" />
+        <title>Pumpaj API</title>
+        <style>
+          body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; margin: 0; background: #0f172a; color: #e2e8f0; }
+          main { max-width: 720px; margin: 0 auto; padding: 48px 32px 64px; }
+          h1 { font-size: 2rem; margin-bottom: 0.25rem; }
+          p { margin: 0.5rem 0 1.5rem; color: rgba(226,232,240,0.8); }
+          code { background: rgba(15,23,42,0.7); padding: 0.15rem 0.35rem; border-radius: 6px; font-size: 0.95rem; }
+          ul { padding-left: 1.2rem; }
+          li { margin-bottom: 0.75rem; }
+          a { color: #60a5fa; text-decoration: none; }
+          a:hover { text-decoration: underline; }
+          .card { background: rgba(15,23,42,0.65); border: 1px solid rgba(148,163,184,0.25); border-radius: 18px; padding: 24px 28px; box-shadow: 0 24px 65px rgba(15,23,42,0.45); }
+          .badge { display: inline-flex; align-items: center; gap: 0.4rem; padding: 0.25rem 0.65rem; border-radius: 999px; background: rgba(59,130,246,0.15); color: #bfdbfe; text-transform: uppercase; font-size: 0.7rem; letter-spacing: 0.08em; }
+          .links { margin-top: 1.75rem; display: flex; flex-wrap: wrap; gap: 1rem; }
+          .links a { display: inline-flex; align-items: center; gap: 0.35rem; padding: 0.4rem 0.75rem; border-radius: 12px; border: 1px solid rgba(148,163,184,0.25); }
+          @media (max-width: 600px) { main { padding: 36px 20px 48px; } }
+        </style>
+      </head>
+      <body>
+        <main>
+          <div class="badge">Pumpaj API</div>
+          <h1>Backend je aktivan</h1>
+          <p>Ovaj server pokreće yt-dlp/ffmpeg jobove za Pumpaj aplikacije. Za interaktivni UI poseti <a href="https://pumpajvideodown.vercel.app" target="_blank" rel="noopener">pumpajvideodown.vercel.app</a>.</p>
+          <div class="card">
+            <h2>Brzi endpointi</h2>
+            <ul>
+              <li><code>GET /health</code> &mdash; minimalni health endpoint (treba da vrati <code>{"ok":true}</code>)</li>
+              <li><code>GET /api/version</code> &mdash; verzija servera, yt-dlp i ffmpeg informacije</li>
+              <li><code>POST /api/job/start/best</code> &mdash; pokretanje video posla (zahteva JSON telo)</li>
+              <li><code>GET /api/progress/:id</code> &mdash; SSE stream za praćenje napretka</li> 
+            </ul>
+            <p>Detaljna dokumentacija: <a href="https://github.com/zoxknez/pumpajvideodownloader#readme" target="_blank" rel="noopener">GitHub README</a></p>
+          </div>
+          <div class="links">
+            <a href="/health">🚦 Health</a>
+            <a href="/ready">🟢 Ready</a>
+            <a href="/api/version">📦 API version</a>
+          </div>
+        </main>
+      </body>
+    </html>`);
+});
 
 // Auth and identity routes
 mountAuthRoutes(app);
