@@ -141,18 +141,32 @@ npm run preview
 ## ⚙️ Configuration
 
 Frontend
+- Start from the template and adjust as needed:
+
+   ```powershell
+   copy web/.env.example web/.env.local
+   ```
+
 - `.env.local`
-   - `VITE_API_BASE=http://localhost:5176` (optional override for the legacy Vite UI)
-   - `NEXT_PUBLIC_SUPABASE_URL=https://<project>.supabase.co`
-   - `NEXT_PUBLIC_SUPABASE_ANON_KEY=<anon-key>`
-   - `NEXT_PUBLIC_API=http://localhost:5176` (frontend → backend bridge for the Next.js web app)
-   - At runtime the app also auto‑detects the backend: query param `?apiBase=`, `window.__API_BASE`, and file:// heuristic for desktop
+    - `NEXT_PUBLIC_API=http://localhost:5176` (frontend → backend bridge for the Next.js web app)
+    - `NEXT_PUBLIC_SUPABASE_URL=https://<project>.supabase.co`
+    - `NEXT_PUBLIC_SUPABASE_ANON_KEY=<anon-key>`
+    - (Legacy Vite UI) `VITE_API_BASE=http://localhost:5176`
+    - At runtime the app auto‑detects the backend too: query param `?apiBase=`, `window.__API_BASE`, and file:// heuristic for desktop
 
 Backend (environment)
-- CORS via `CORS_ORIGIN`:
-   - Allow all (dev default): `CORS_ORIGIN=*`
-   - Disable CORS: `CORS_ORIGIN=disabled`
-   - Comma allow‑list: `CORS_ORIGIN=http://localhost:5183,https://your.site`
+- Copy the sample and fill in the values you need:
+
+   ```powershell
+   copy server/.env.example server/.env
+   ```
+
+- Key flags:
+    - `PORT=5176` (ili željeni port)
+    - `CORS_ORIGIN=*` (dozvole; može i lista domena)
+    - `ALLOWED_HOSTS=...` (SSRF zaštita)
+    - `APP_JWT_SECRET`, `APP_JWT_PUBLIC_KEY`, `APP_JWT_PRIVATE_KEY` (Supabase / JWT most)
+    - `MAX_FILESIZE_MB`, `MAX_DURATION_SEC`, `PROXY_DOWNLOAD_MAX_PER_MIN` (soft limiti)
 
 Data directory (canonical)
 - `server/data/` holds runtime JSON files:
@@ -161,6 +175,33 @@ Data directory (canonical)
    - `users.json` – user plans and identities
 - On first run, the server migrates old files from legacy paths (e.g., `server/server/data/`).
 - Git ignores these files; use `npm run dev:clean:data` to reset.
+
+## 🌍 Production deployment
+
+For the latest production checklist with domains and credentials, see [`docs/production-setup.md`](docs/production-setup.md). Quick recap:
+
+1. **Railway (Express API)**
+   - Variables: `PORT=8080`, `NIXPACKS_NODE_VERSION=20`, `CORS_ORIGIN=https://pumpajvideodown.vercel.app`
+   - Optional safety: `ALLOWED_HOSTS=youtube.com,youtu.be`
+2. **Vercel (Next.js web)**
+   - Production env vars: `NEXT_PUBLIC_API`, `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`
+   - Project protection: keep Vercel Authentication disabled for public access, or issue a share link.
+3. **Deploy**
+   ```powershell
+   # Backend
+   railway up
+
+   # Frontend
+   vercel deploy --prod --yes
+   vercel alias set <deployment-url> pumpajvideodown.vercel.app
+   ```
+4. **Smoke test**
+   ```powershell
+   npm run smoke:prod
+   ```
+   Confirms `https://pumpajvideodown.vercel.app` returns 200 and the Railway `/health` endpoint is OK.
+
+> ℹ️  The repository root contains `vercel.json` which routes all requests into the `web/` Next.js app. Keep that file in sync if you move directories.
 
 ## ⌨️ Keyboard shortcuts
 
@@ -339,14 +380,32 @@ npm run preview
 ### ⚙️ Konfiguracija
 
 Frontend
-- `.env.local`: podesite `VITE_API_BASE` (npr. `http://localhost:5176`)
-- Na runtime‑u UI pokušava i auto‑detekciju: query `?apiBase=`, `window.__API_BASE`, heuristika za `file://`
+- Počni od šablona i prilagodi vrednosti:
+
+  ```powershell
+  copy web/.env.example web/.env.local
+  ```
+
+- `.env.local`
+   - `NEXT_PUBLIC_API=http://localhost:5176`
+   - `NEXT_PUBLIC_SUPABASE_URL=https://<projekat>.supabase.co`
+   - `NEXT_PUBLIC_SUPABASE_ANON_KEY=<anon>`
+   - (Za legacy Vite UI) `VITE_API_BASE=http://localhost:5176`
+   - UI uvek pokušava i auto‑detekciju: query `?apiBase=`, `window.__API_BASE`, heuristika za `file://`
 
 Backend (okruženje)
-- CORS preko `CORS_ORIGIN`:
-   - Dozvoli sve (dev): `CORS_ORIGIN=*`
-   - Isključi CORS: `CORS_ORIGIN=disabled`
-   - Lista dozvoljenih: `CORS_ORIGIN=http://localhost:5183,https://tvoj.sajt`
+- Kopiraj šablon i popuni vrednosti:
+
+  ```powershell
+  copy server/.env.example server/.env
+  ```
+
+- Bitna podešavanja:
+   - `PORT=5176` (ili željeni port)
+   - `CORS_ORIGIN=*` (ili lista domena)
+   - `ALLOWED_HOSTS=...` (SSRF zaštita)
+   - `APP_JWT_SECRET`, `APP_JWT_PUBLIC_KEY`, `APP_JWT_PRIVATE_KEY` (Supabase most)
+   - `MAX_FILESIZE_MB`, `MAX_DURATION_SEC`, `PROXY_DOWNLOAD_MAX_PER_MIN`
 
 Direktorijum sa podacima (kanonski)
 - `server/data/` sadrži:
@@ -355,6 +414,22 @@ Direktorijum sa podacima (kanonski)
    - `users.json` – korisnici i planovi
 - Na prvom startu server migrira fajlove sa starih putanja (npr. `server/server/data/`).
 - Verziona kontrola ignoriše ove fajlove; koristi `npm run dev:clean:data` za reset.
+
+### 🌍 Produkcija (sažeto)
+
+Detaljan vodič je u [`docs/production-setup.md`](docs/production-setup.md). Najkraće:
+
+1. **Railway** – `PORT=8080`, `NIXPACKS_NODE_VERSION=20`, `CORS_ORIGIN=https://pumpajvideodown.vercel.app` (+ opciono `ALLOWED_HOSTS`)
+2. **Vercel** – podesi `NEXT_PUBLIC_API`, `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY` u Production okruženju i isključi Vercel Authentication ako želiš javni pristup
+3. **Deploy komande**
+   ```powershell
+   railway up
+   vercel deploy --prod --yes
+   vercel alias set <deployment-url> pumpajvideodown.vercel.app
+   ```
+4. **Brza provera** – `npm run smoke:prod` testira i web i backend `/health`
+
+`vercel.json` u korenu repozitorijuma rutira sve zahteve ka `web/` Next.js aplikaciji – ažuriraj ga ako promeniš strukturu.
 
 ### ⌨️ Prečice na tastaturi
 

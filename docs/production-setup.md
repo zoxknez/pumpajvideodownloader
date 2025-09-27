@@ -28,6 +28,8 @@ NEXT_PUBLIC_SUPABASE_ANON_KEY=<tvoj_anon_key>
 ```
 Ponovi za Preview / Development ili koristi "Environment Copy" opciju.
 
+> Važno: onemogući **Vercel Authentication** u Project → Settings → Protection da bi sajt bio javno dostupan.
+
 ### 3. Lokalni razvoj
 `web/.env.local` (primer):
 ```
@@ -46,6 +48,11 @@ npm run dev:start:all:full
 2. POST `/api/analyze` uz telo `{ "url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ" }`
 3. Front (Vercel) → login → start download → SSE napreduje → file dostupno.
 4. DevTools Network: pozivi idu na Railway domen (ne Vercel /api proxy).
+
+Brza automatizovana provera:
+```
+npm run smoke:prod
+```
 
 ### 5. Bez Free/Premium plana
 Policy sistem trenutno tretira sve korisnike isto (default). Kasnija nadogradnja zahteva: dodavanje plan field u user repo + policy map.
