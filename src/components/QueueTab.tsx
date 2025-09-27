@@ -1,14 +1,19 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Clock, Play, Trash2, ArrowUp, ArrowDown, RefreshCw, ChevronsUp, ChevronsDown, FastForward } from 'lucide-react';
+import { Clock, Play, Trash2, ArrowUp, ArrowDown, RefreshCw, ChevronsUp, ChevronsDown, FastForward, Sparkles } from 'lucide-react';
 import { useToast } from './ToastProvider';
+import { usePolicy } from './AuthProvider';
+import { PolicyBadge } from './PolicyBadge';
+import { openPremiumUpgrade } from '../lib/premium';
 
 type QItem = { position: number; id: string; title: string; url: string; mode: string; format: string };
 
 export const QueueTab: React.FC = () => {
   const isIpc = typeof window !== 'undefined' && !!(window as any).api;
   const { info, error } = useToast();
+  const policy = usePolicy();
   const [items, setItems] = useState<QItem[]>([]);
   const [selected, setSelected] = useState<string | null>(null);
+  const [metrics, setMetrics] = useState<{ running: number; queued: number; maxConcurrent: number } | null>(null);
   const listRef = useRef<HTMLDivElement | null>(null);
   const selectedIndex = useMemo(() => items.findIndex(i => i.id === selected), [items, selected]);
 
@@ -26,6 +31,29 @@ export const QueueTab: React.FC = () => {
     const id = window.setInterval(load, 4000);
     return () => window.clearInterval(id);
   }, [isIpc, load]);
+
+  useEffect(() => {
+    if (!isIpc) return;
+    let disposed = false;
+    const tick = async () => {
+      try {
+        const r = await (window as any).api?.jobsMetrics?.();
+        if (!disposed && r) {
+          setMetrics({
+            running: Number(r.running || 0),
+            queued: Number(r.queued || 0),
+            maxConcurrent: Number(r.maxConcurrent || policy.concurrentJobs),
+          });
+        }
+      } catch {}
+    };
+    tick();
+    const id = window.setInterval(tick, 4000);
+    return () => {
+      disposed = true;
+      window.clearInterval(id);
+    };
+  }, [isIpc, policy.concurrentJobs]);
 
   const startNow = useCallback(async (id?: string) => {
     if (!isIpc) return;
@@ -106,6 +134,34 @@ export const QueueTab: React.FC = () => {
 
   return (
     <div className="max-w-5xl mx-auto">
+      <div className="mb-5 grid gap-4 rounded-2xl border border-white/10 bg-white/5 p-4 backdrop-blur-md lg:grid-cols-[260px_1fr]">
+        <PolicyBadge />
+        <div className="flex flex-col gap-3">
+          <div className="grid grid-cols-2 gap-3 md:grid-cols-3">
+            <div className="rounded-xl border border-white/10 bg-black/20 p-3 text-white/80">
+              <div className="text-[11px] font-semibold uppercase tracking-wide text-white/60">Aktivni poslovi</div>
+              <div className="text-2xl font-bold text-white">{metrics?.running ?? 0}</div>
+            </div>
+            <div className="rounded-xl border border-white/10 bg-black/20 p-3 text-white/80">
+              <div className="text-[11px] font-semibold uppercase tracking-wide text-white/60">U redu</div>
+              <div className="text-2xl font-bold text-white">{metrics?.queued ?? items.length}</div>
+            </div>
+            <div className="rounded-xl border border-white/10 bg-black/20 p-3 text-white/80">
+              <div className="text-[11px] font-semibold uppercase tracking-wide text-white/60">Limit plana</div>
+              <div className="text-2xl font-bold text-white">{policy.concurrentJobs}</div>
+            </div>
+          </div>
+          {policy.plan !== 'PREMIUM' && (
+            <button
+              onClick={() => openPremiumUpgrade('queue-header')}
+              className="inline-flex w-fit items-center gap-2 rounded-xl bg-gradient-to-r from-purple-600 to-pink-600 px-4 py-2 text-sm font-semibold text-white shadow-lg hover:from-purple-500 hover:to-pink-500"
+            >
+              <Sparkles className="h-4 w-4" />
+              Premium povećava paralelne poslove
+            </button>
+          )}
+        </div>
+      </div>
       <div className="flex items-center justify-between mb-4">
         <div className="flex items-center gap-2 text-white/80">
           <Clock className="w-5 h-5" />

@@ -1,29 +1,25 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Clipboard, Trash2, Play, Music2, CheckCircle2, AlertTriangle, Loader2, Pause, Square, Download, Upload } from 'lucide-react';
-import { API_BASE } from '../lib/api';
+import { Clipboard, Trash2, Play, Music2, CheckCircle2, AlertTriangle, Loader2, Square, Download, Upload, XCircle } from 'lucide-react';
+import { createBatch, getBatch, cancelBatch, type BatchSummary } from '../lib/api';
+import { usePolicy } from './AuthProvider';
+import { useToast } from './ToastProvider';
+import { openPremiumUpgrade } from '../lib/premium';
 
 type BatchItem = { url: string; title?: string };
 type JobState = 'pending' | 'started' | 'completed' | 'failed' | 'canceled';
 
 export const BatchTab: React.FC = () => {
+  const policy = usePolicy();
+  const { error: toastError } = useToast();
   const [input, setInput] = useState('');
   const [jobs, setJobs] = useState<Record<string, JobState>>({});
-  const [running, setRunning] = useState(false);
-  const [paused, setPaused] = useState(false);
-  const [stopRequested, setStopRequested] = useState(false);
-  const iframeRef = useRef<HTMLIFrameElement | null>(null);
+  const [activeBatchId, setActiveBatchId] = useState<string | null>(null);
+  const [batchSummary, setBatchSummary] = useState<BatchSummary | null>(null);
+  const [creating, setCreating] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
-  const api = API_BASE || '';
-  const token = useMemo(() => localStorage.getItem('app:token') || '', []);
-  const isIpc = typeof window !== 'undefined' && Boolean((window as any).api?.start);
-  const unsubRef = useRef<null | (() => void)>(null);
-
-  // live refs for control flags
-  const pausedRef = useRef(paused);
-  const stopRef = useRef(stopRequested);
+  // const api = API_BASE || ''; // not needed currently
+  // Server-driven batching only (placeholder for desktop integration)
   const jobsRef = useRef(jobs);
-  useEffect(() => { pausedRef.current = paused; }, [paused]);
-  useEffect(() => { stopRef.current = stopRequested; }, [stopRequested]);
   useEffect(() => { jobsRef.current = jobs; }, [jobs]);
 
   // UI helpers (consistent look & feel)
@@ -36,6 +32,8 @@ export const BatchTab: React.FC = () => {
     const uniq = Array.from(new Set(lines));
     return uniq.filter((u) => /^https?:\/\//i.test(u)).map((u) => ({ url: u }));
   }, [input]);
+  const overLimit = items.length > policy.batchMax;
+  const limitLabel = `Max ${policy.batchMax} URL${policy.batchMax === 1 ? '' : 'a'} po batch-u`;
 
   // Load/save input from localStorage for persistence
   useEffect(() => {
@@ -46,28 +44,38 @@ export const BatchTab: React.FC = () => {
     localStorage.setItem('batch.input', input);
   }, [input]);
 
-  // Progress wiring in IPC mode
+  // Poll active batch summary
   useEffect(() => {
-    if (!isIpc) return;
-    try {
-      unsubRef.current?.();
-      const offP = (window as any).api.onProgress?.((p: any) => {
-        const id = p?.id;
-        if (!id) return;
-        // id is url in our usage
-        setJobs((prev) => ({ ...prev, [id]: prev[id] || 'started' }));
-      });
-      const offD = (window as any).api.onDone?.((p: any) => {
-        const id = p?.id; const code = p?.code;
-        if (!id) return;
-        setJobs((prev) => ({ ...prev, [id]: code === 0 ? 'completed' : 'failed' }));
-      });
-      unsubRef.current = () => { try { offP?.(); offD?.(); } catch {} };
-    } catch {}
-    return () => { try { unsubRef.current?.(); } catch {} };
-  }, [isIpc]);
+    let timer: any;
+    let aborted = false;
+    async function loop() {
+      if (!activeBatchId) return;
+  // start polling
+      try {
+        const summary = await getBatch(activeBatchId);
+        if (aborted) return;
+        setBatchSummary(summary);
+        const newJobs: Record<string, JobState> = {};
+        for (const it of summary.items) {
+          const st = it.status as string;
+          if (st === 'completed' || st === 'failed' || st === 'canceled') newJobs[it.jobId] = st as JobState;
+          else if (st === 'in-progress') newJobs[it.jobId] = 'started';
+          else if (st === 'queued') newJobs[it.jobId] = 'pending';
+        }
+        setJobs(newJobs);
+        const allDone = summary.total === (summary.completed + summary.failed + summary.canceled);
+        if (!allDone) timer = setTimeout(loop, 2000);
+      } catch {
+        // stop polling on 404 or auth
+      } finally {
+  // done polling cycle
+      }
+    }
+    loop();
+    return () => { aborted = true; if (timer) clearTimeout(timer); };
+  }, [activeBatchId]);
 
-  const clearAll = () => { setInput(''); setJobs({}); };
+  const clearAll = () => { setInput(''); setJobs({}); setBatchSummary(null); setActiveBatchId(null); };
 
   const pasteFromClipboard = async () => {
     try {
@@ -76,66 +84,33 @@ export const BatchTab: React.FC = () => {
     } catch {}
   };
 
-  const sleep = (ms: number) => new Promise((res) => setTimeout(res, ms));
-  async function waitFor(predicate: () => boolean, ms = 120000, step = 500) {
-    const started = Date.now();
-    while (Date.now() - started < ms) {
-      if (predicate()) return true;
-      await sleep(step);
-    }
-    return false;
-  }
-
   const startSeq = async (mode: 'video' | 'audio') => {
-    if (!items.length || running) return;
-    setRunning(true);
-    setPaused(false);
-    setStopRequested(false);
+    if (!items.length) return;
+    if (overLimit) {
+      toastError(
+        `Plan ${policy.plan} dozvoljava do ${policy.batchMax} URL-a po batch-u. Ukloni ${items.length - policy.batchMax} link${items.length - policy.batchMax === 1 ? '' : 'ova'} ili nadogradi.`,
+        'Batch limit',
+        { actionLabel: 'Upgrade', onAction: () => openPremiumUpgrade('batch-limit') }
+      );
+      return;
+    }
+    setCreating(true);
     try {
-      for (const it of items) {
-        if (stopRef.current) break;
-        // wait while paused
-        while (pausedRef.current) { if (stopRef.current) break; await sleep(250); }
-        if (stopRef.current) break;
-
-        // mark started
-        setJobs((prev) => ({ ...prev, [it.url]: prev[it.url] || 'started' }));
-        if (isIpc) {
-          // Start via IPC and wait until done
-          try {
-            await (window as any).api.start?.({ id: it.url, url: it.url, outDir: mode === 'audio' ? 'Audio' : 'Video', mode, audioFormat: 'm4a' });
-          } catch {}
-          // wait for completion / failure signaled by onDone
-          await waitFor(() => {
-            const st = jobsRef.current[it.url];
-            return stopRef.current || st === 'completed' || st === 'failed' || st === 'canceled';
-          }, 180000, 600);
-        } else {
-          // Legacy server flow via hidden iframe + history polling
-          const u = new URL(`${api}/api/download/${mode === 'video' ? 'best' : 'audio'}`);
-          u.searchParams.set('url', it.url);
-          if (mode === 'audio') u.searchParams.set('format', 'm4a');
-          if (token) u.searchParams.set('token', token);
-          u.searchParams.set('ts', String(Date.now()));
-          if (iframeRef.current) iframeRef.current.src = u.toString();
-          await waitFor(() => {
-            const st = jobsRef.current[it.url];
-            return stopRef.current || st === 'completed' || st === 'failed';
-          }, 180000, 600);
-        }
-        if (stopRef.current) break;
-        // brief gap before next
-        await sleep(400);
-      }
+      const resp = await createBatch(items.map(i => i.url), mode, 'm4a');
+      setActiveBatchId(resp.batchId);
+      setJobs({});
+      setBatchSummary(null);
+    } catch (e) {
+      // TODO: surface toast
+      console.error('Batch create failed', e);
     } finally {
-      setRunning(false);
-      setPaused(false);
-      setStopRequested(false);
+      setCreating(false);
     }
   };
 
-  const total = items.length;
-  const done = useMemo(() => items.filter((i) => jobs[i.url] === 'completed').length, [items, jobs]);
+  const completedCount = useMemo(() => items.filter((i) => jobs[i.url] === 'completed').length, [items, jobs]);
+  const total = batchSummary ? batchSummary.total : items.length;
+  const done = batchSummary ? batchSummary.completed : completedCount;
 
   // Limit list to avoid inner scroll in fixed panels
   const MAX_BATCH_LIST = 10;
@@ -143,14 +118,18 @@ export const BatchTab: React.FC = () => {
 
   return (
     <div className="max-w-6xl mx-auto">
-  {/* Hidden iframe for legacy server downloads (unused in IPC mode) */}
-  <iframe ref={iframeRef} title="batch-downloader" style={{ display: isIpc ? 'none' : 'none' }} />
+  {/* Server-driven batch: no iframe required */}
 
       {/* Input & tools card */}
       <div className="rounded-2xl border border-white/10 bg-white/5 backdrop-blur-md p-5 mb-5">
         <div className="flex items-center justify-between mb-3">
           <div className="text-white/70 text-sm">Batch input</div>
-          <div className="text-xs text-white/70">Valid <span className="ml-1 inline-flex items-center px-2 py-0.5 rounded-full bg-white/10 border border-white/15 text-white">{items.length}</span></div>
+            <div className="flex items-center gap-3 text-xs">
+              <div className={`inline-flex items-center px-2 py-0.5 rounded-full border ${overLimit ? 'bg-rose-500/10 border-rose-400/40 text-rose-200' : 'bg-white/10 border-white/15 text-white'}`}>
+                Valid {items.length}
+              </div>
+              <span className={`${overLimit ? 'text-rose-200' : 'text-white/70'}`}>{limitLabel}</span>
+            </div>
         </div>
         <textarea
           value={input}
@@ -158,6 +137,11 @@ export const BatchTab: React.FC = () => {
           placeholder={`https://www.youtube.com/watch?v=...\nhttps://vimeo.com/...`}
           className="w-full h-44 bg-white/10 border border-white/20 rounded-xl p-4 text-white placeholder-white/40 focus:border-purple-500 focus:ring-2 focus:ring-purple-500/25 outline-none"
         />
+        {overLimit && (
+          <div className="mt-2 text-xs text-rose-200 bg-rose-500/10 border border-rose-400/30 rounded-lg px-3 py-2">
+            Dodatno: ukloni {items.length - policy.batchMax} URL{items.length - policy.batchMax === 1 ? '' : 'a'} da pokreneš batch ili pređi na Premium.
+          </div>
+        )}
 
         <div className="mt-4 flex flex-wrap items-center gap-2">
           <button onClick={pasteFromClipboard} className={`${btnBase} ${btnSurface}`}>
@@ -231,33 +215,36 @@ export const BatchTab: React.FC = () => {
       {/* Call-to-action row */}
       <div className="flex flex-wrap gap-3 mb-6 items-center">
         <button
-          disabled={!items.length || running}
+          disabled={!items.length || creating || Boolean(activeBatchId) || overLimit}
           onClick={() => startSeq('video')}
           className={`${btnBase} ${btnPrimary} disabled:opacity-50 bg-gradient-to-r from-emerald-600 to-green-600`}
         >
-          {running ? <Loader2 className="w-4 h-4 animate-spin" /> : <Play className="w-4 h-4" />} Start Video (Best MP4)
+          {creating ? <Loader2 className="w-4 h-4 animate-spin" /> : <Play className="w-4 h-4" />} {activeBatchId ? 'Batch Running' : 'Start Video Batch'}
         </button>
         <button
-          disabled={!items.length || running}
+          disabled={!items.length || creating || Boolean(activeBatchId) || overLimit}
           onClick={() => startSeq('audio')}
           className={`${btnBase} ${btnPrimary} disabled:opacity-50 bg-gradient-to-r from-purple-600 to-pink-600`}
         >
-          {running ? <Loader2 className="w-4 h-4 animate-spin" /> : <Music2 className="w-4 h-4" />} Start Audio (M4A)
+          {creating ? <Loader2 className="w-4 h-4 animate-spin" /> : <Music2 className="w-4 h-4" />} {activeBatchId ? 'Batch Running' : 'Start Audio Batch'}
         </button>
-        <button
-          disabled={!running}
-          onClick={() => setPaused((p) => !p)}
-          className={`${btnBase} bg-gradient-to-r from-blue-600 to-indigo-600 text-white disabled:opacity-50`}
-        >
-          {paused ? <Play className="w-4 h-4" /> : <Pause className="w-4 h-4" />} {paused ? 'Resume' : 'Pause'}
-        </button>
-        <button
-          disabled={!running}
-          onClick={() => { setStopRequested(true); setPaused(false); }}
-          className={`${btnBase} bg-gradient-to-r from-red-600 to-rose-600 text-white disabled:opacity-50`}
-        >
-          <Square className="w-4 h-4" /> Stop
-        </button>
+        {activeBatchId && (
+          <button
+            disabled={!activeBatchId || !batchSummary || (batchSummary.completed + batchSummary.failed + batchSummary.canceled) === batchSummary.total}
+            onClick={async () => { if (!activeBatchId) return; try { await cancelBatch(activeBatchId); } catch (e) { console.error(e); } }}
+            className={`${btnBase} bg-gradient-to-r from-red-600 to-rose-600 text-white disabled:opacity-50`}
+          >
+            <Square className="w-4 h-4" /> Cancel Batch
+          </button>
+        )}
+        {activeBatchId && (
+          <button
+            onClick={() => { setActiveBatchId(null); setBatchSummary(null); setJobs({}); }}
+            className={`${btnBase} bg-gradient-to-r from-slate-600 to-slate-700 text-white`}
+          >
+            <XCircle className="w-4 h-4" /> Close
+          </button>
+        )}
         <div className="text-white/85 flex items-center gap-2 ml-auto text-sm">
           {done === total && total > 0 ? (
             <>
@@ -273,24 +260,44 @@ export const BatchTab: React.FC = () => {
 
       {/* Items list */}
       <div className="space-y-2">
-        {renderItems.map((it) => {
-          const st = jobs[it.url] || 'pending';
-          return (
-            <div key={it.url} className="flex items-center gap-3 bg-white/5 border border-white/10 rounded-xl p-3">
-              <div
-                className={`w-2 h-2 rounded-full ${
-                  st === 'completed' ? 'bg-emerald-400' :
-                  st === 'failed' ? 'bg-rose-400' :
-                  st === 'started' ? 'bg-blue-400 animate-pulse' : 'bg-slate-400'
-                }`}
-              />
-              <div className="text-sm text-white/90 truncate flex-1">{it.url}</div>
-              <div className="text-xs text-white/60 capitalize">{st.replace('-', ' ')}</div>
-            </div>
-          );
-        })}
-        {!items.length && (
+        {activeBatchId && batchSummary ? (
+          batchSummary.items.slice(0, 25).map(it => {
+            const st = it.status;
+            return (
+              <div key={it.jobId} className="flex items-center gap-3 bg-white/5 border border-white/10 rounded-xl p-3">
+                <div className={`w-2 h-2 rounded-full ${
+                    st === 'completed' ? 'bg-emerald-400' :
+                    st === 'failed' ? 'bg-rose-400' :
+                    st === 'canceled' ? 'bg-slate-500' :
+                    st === 'in-progress' ? 'bg-blue-400 animate-pulse' : 'bg-slate-400'
+                  }`} />
+                <div className="text-xs text-white/50 w-16 tabular-nums">{Math.round(it.progress || 0)}%</div>
+                <div className="text-sm text-white/90 truncate flex-1" title={it.url}>{it.url}</div>
+                <div className="text-xs text-white/60 capitalize">{st.replace('-', ' ')}</div>
+              </div>
+            );
+          })
+        ) : (
+          renderItems.map((it) => {
+            const st = jobs[it.url] || 'pending';
+            return (
+              <div key={it.url} className="flex items-center gap-3 bg-white/5 border border-white/10 rounded-xl p-3">
+                <div className={`w-2 h-2 rounded-full ${
+                    st === 'completed' ? 'bg-emerald-400' :
+                    st === 'failed' ? 'bg-rose-400' :
+                    st === 'started' ? 'bg-blue-400 animate-pulse' : 'bg-slate-400'
+                  }`} />
+                <div className="text-sm text-white/90 truncate flex-1">{it.url}</div>
+                <div className="text-xs text-white/60 capitalize">{st.replace('-', ' ')}</div>
+              </div>
+            );
+          })
+        )}
+        {!items.length && !activeBatchId && (
           <div className="text-center text-white/50 text-sm py-10">Unesi bar jedan URL (po jedan po liniji).</div>
+        )}
+        {activeBatchId && !batchSummary && (
+          <div className="text-center text-white/60 text-sm py-10 flex items-center justify-center gap-2"><Loader2 className="w-4 h-4 animate-spin" /> Kreiranje batch-a...</div>
         )}
       </div>
     </div>

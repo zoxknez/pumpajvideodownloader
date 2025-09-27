@@ -3,7 +3,9 @@ import { DownloadCard } from './DownloadCard';
 import { Volume2, Music, Headphones, Radio, Disc } from 'lucide-react';
 import { downloadJobFile, isJobFileReady, startAudioJob, subscribeJobProgress } from '../lib/api';
 import { ipcAvailable, startIpcAdvanced, onProgressIpc, onDoneIpc, revealPath, openPath } from '../lib/downloader';
+import { openPremiumUpgrade } from '../lib/premium';
 import { useToast } from './ToastProvider';
+import { usePolicy } from './AuthProvider';
 
 export interface AudioSectionProps {
   analysisData?: {
@@ -27,6 +29,7 @@ export interface AudioSectionProps {
 
 export const AudioSection: React.FC<AudioSectionProps> = ({ analysisData }) => {
   const { error: toastError } = useToast();
+  const policy = usePolicy();
   const [selectedAudio, setSelectedAudio] = useState(0);
   // no scroll containers; clean list
   const [jobId, setJobId] = useState<string | null>(null);
@@ -83,9 +86,24 @@ export const AudioSection: React.FC<AudioSectionProps> = ({ analysisData }) => {
   const desiredTiers: Array<'studio' | 'standard' | 'compact'> = ['studio', 'standard', 'compact'];
     const chosen = desiredTiers.map((t) => byTier.get(t)).filter(Boolean) as any[];
     const audioFormats = chosen.slice(0, 4);
+    const planInfo = `Plan ${policy.plan}: do ${policy.maxAudioKbps} kbps`;
 
   const handleStartAudio = async () => {
     if (!analysisData?.sourceUrl || !analysisData?.metadata?.title) return;
+    const current = audioFormats?.[selectedAudio];
+    if (current) {
+      const bitrate = parseKbps(current.bitrate);
+      if (policy.maxAudioKbps > 0 && bitrate > policy.maxAudioKbps) {
+        toastError(
+          `FREE plan ograničava audio na ${policy.maxAudioKbps} kbps. Odaberi niži bitrate ili Premium.`,
+          'Premium feature',
+          { actionLabel: 'Upgrade', onAction: () => openPremiumUpgrade('audio-start-limit') }
+        );
+        const fallbackIdx = audioFormats.findIndex((fmt: any) => parseKbps(fmt.bitrate) <= policy.maxAudioKbps);
+        if (fallbackIdx >= 0) setSelectedAudio(fallbackIdx);
+        return;
+      }
+    }
     try {
       if (ipcAvailable) {
         const id = crypto.randomUUID();
@@ -143,12 +161,18 @@ export const AudioSection: React.FC<AudioSectionProps> = ({ analysisData }) => {
   return (
       <DownloadCard title="Audio Extraction" icon={Volume2} variant="flat">
         <div className="space-y-4">
+          <div className="flex items-center justify-between text-xs text-white/60">
+            <span>{planInfo}</span>
+            <span>Maks bitrate: <span className="text-white/80">{policy.maxAudioKbps} kbps</span></span>
+          </div>
           {/* Audio preview and metadata removed as requested */}
 
   <div className="relative">
     <div className="grid grid-cols-1 gap-2">
     {audioFormats?.map((audio, index) => {
               const IconComponent = audio.icon;
+              const bitrateKbps = parseKbps(audio.bitrate);
+              const limitExceeded = policy.maxAudioKbps > 0 && bitrateKbps > policy.maxAudioKbps;
               return (
         <div
       key={audio.formatId || audio.url || `${audio.format}-${audio.bitrate}`}
@@ -158,8 +182,19 @@ export const AudioSection: React.FC<AudioSectionProps> = ({ analysisData }) => {
                     ${selectedAudio === index
                       ? 'border-purple-500 bg-purple-500/10 shadow-lg shadow-purple-500/25'
                       : 'border-white/10 bg-white/5 hover:border-white/20 hover:bg-white/10'}
+                    ${limitExceeded ? 'opacity-80 ring-1 ring-yellow-500/40 cursor-not-allowed' : ''}
                   `}
-                  onClick={() => setSelectedAudio(index)}
+                  onClick={() => {
+                    if (limitExceeded) {
+                      toastError(
+                        `FREE plan podržava do ${policy.maxAudioKbps} kbps. Nadogradnja otključava ${audio.bitrate}.`,
+                        'Premium feature',
+                        { actionLabel: 'Upgrade', onAction: () => openPremiumUpgrade('audio-select-limit') }
+                      );
+                      return;
+                    }
+                    setSelectedAudio(index);
+                  }}
                 >
                   {/* Inline badge */}
 
@@ -174,6 +209,9 @@ export const AudioSection: React.FC<AudioSectionProps> = ({ analysisData }) => {
                           <span className={`px-1.5 py-0.5 text-[10px] font-bold rounded-full bg-gradient-to-r ${audio.color} text-white`}>{audio.badge}</span>
                         </div>
                         <div className="text-[12px] text-slate-300">{audio.description} • {audio.size}</div>
+                        {limitExceeded && (
+                          <div className="text-[11px] text-yellow-200/90">Premium otključava veći bitrate.</div>
+                        )}
                       </div>
                     </div>
                     <div className="w-4 h-4 rounded-full border-2 border-slate-400/80 flex items-center justify-center">

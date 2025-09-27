@@ -26,6 +26,8 @@
     "dev:start:frontend": "vite --port 5183",
     "dev:start:backend": "npm run dev --prefix server",
     "dev:start:all": "concurrently -k --restart-tries 999 --restart-after 2000 -n FE,BE \"npm:dev:start:frontend\" \"npm:dev:start:backend\"",
+  "dev:start:web": "npm run dev -w web",
+  "dev:start:all:full": "concurrently -k --restart-tries 999 --restart-after 2000 -n FE,BE,WEB \"npm:dev:start:frontend\" \"npm:dev:start:backend\" \"npm:dev:start:web\"",
     "dev:stop": "powershell -NoProfile -ExecutionPolicy Bypass -File .\\tools\\stop.ps1",
     "dev:clean": "powershell -NoProfile -ExecutionPolicy Bypass -File .\\tools\\clean.ps1",
     "dev:clean:data": "powershell -NoProfile -ExecutionPolicy Bypass -File .\\tools\\clean-data.ps1",

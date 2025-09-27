@@ -2,10 +2,16 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import { API_BASE } from '../lib/api';
 
-type User = { id: string; email?: string; username?: string; plan: 'FREE' } | null;
-type Policy = {
-  plan: 'FREE'; maxHeight: number; maxAudioKbps: number; playlistMax: number; batchMax: number; concurrentJobs: number;
+ export type Plan = 'FREE' | 'PREMIUM';
+ export type Policy = {
+  plan: Plan; maxHeight: number; maxAudioKbps: number; playlistMax: number; batchMax: number; concurrentJobs: number;
   allowSubtitles: boolean; allowChapters: boolean; allowMetadata: boolean; speedLimitKbps?: number;
+};
+ type User = { id: string; email?: string; username?: string; plan: Plan } | null;
+
+const POLICY_DEFAULTS: Record<Plan, Policy> = {
+  FREE: { plan: 'FREE', maxHeight: 720, maxAudioKbps: 128, playlistMax: 10, batchMax: 2, concurrentJobs: 1, allowSubtitles: false, allowChapters: false, allowMetadata: false, speedLimitKbps: 1500 },
+  PREMIUM: { plan: 'PREMIUM', maxHeight: 4320, maxAudioKbps: 320, playlistMax: 300, batchMax: 10, concurrentJobs: 4, allowSubtitles: true, allowChapters: true, allowMetadata: true },
 };
 
 type AuthCtx = {
@@ -31,16 +37,19 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const res = await fetch(`${API_BASE}/api/me`, { headers: { Authorization: `Bearer ${tok}` } });
     if (!res.ok) throw new Error('Unauthorized');
     const data = await res.json();
-  const u: User = data.user
-    ? {
-        id: String(data.user.id || 'me'),
-        email: data.user.email || undefined,
-        username: data.user.username || undefined,
-        plan: 'FREE',
-      }
-    : { id: 'me', plan: 'FREE' };
-  setMe(u);
-  setPolicy({ plan: 'FREE', maxHeight: 4320, maxAudioKbps: 320, playlistMax: 100, batchMax: 100, concurrentJobs: 3, allowSubtitles: true, allowChapters: true, allowMetadata: true });
+    const apiPolicy = data.policy as Policy | undefined;
+    const serverPlan = (data.user?.plan === 'PREMIUM') ? 'PREMIUM' : 'FREE';
+    const u: User = data.user
+      ? {
+          id: String(data.user.id || 'me'),
+          email: data.user.email || undefined,
+          username: data.user.username || undefined,
+          plan: serverPlan,
+        }
+      : { id: 'me', plan: serverPlan };
+    setMe(u);
+  if (apiPolicy) setPolicy(apiPolicy);
+  else setPolicy(POLICY_DEFAULTS[serverPlan]);
   }, []);
 
   useEffect(() => {
@@ -61,7 +70,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       if (username === '') username = undefined;
       if (email === '') email = undefined;
       setMe({ id: 'local', email, username, plan: 'FREE' });
-      setPolicy({ plan: 'FREE', maxHeight: 4320, maxAudioKbps: 320, playlistMax: 100, batchMax: 100, concurrentJobs: 3, allowSubtitles: true, allowChapters: true, allowMetadata: true });
+  setPolicy(POLICY_DEFAULTS.FREE);
       return;
     }
         fetchMe(token).catch(() => {
@@ -88,7 +97,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   try { localStorage.setItem('app:lastUsername', nameInput); } catch {}
   try { localStorage.setItem('app:lastEmail', emailInput); } catch {}
       setMe({ id: 'local', email: emailInput || undefined, username: nameInput || undefined, plan: 'FREE' });
-      setPolicy({ plan: 'FREE', maxHeight: 4320, maxAudioKbps: 320, playlistMax: 100, batchMax: 100, concurrentJobs: 3, allowSubtitles: true, allowChapters: true, allowMetadata: true });
+  setPolicy(POLICY_DEFAULTS.FREE);
       return;
     }
     // Web/server mode
@@ -124,6 +133,11 @@ export function useAuth() {
   const v = useContext(Ctx);
   if (!v) throw new Error('useAuth must be used within AuthProvider');
   return v;
+}
+
+export function usePolicy(defaultPlan: Plan = 'FREE') {
+  const { policy } = useAuth();
+  return policy ?? POLICY_DEFAULTS[defaultPlan];
 }
 
 export function LoginGate({ children }: { children: React.ReactNode }) {
@@ -190,7 +204,10 @@ export function LoginGate({ children }: { children: React.ReactNode }) {
   return <>{children}</>;
 }
 
-export function FeatureGuard({ children }: { children: React.ReactNode }) {
-  // Premium removed: always render
-  return <>{children}</>;
+export function FeatureGuard({ children, plan = 'FREE', fallback }: { children: React.ReactNode; plan?: Plan; fallback?: React.ReactNode }) {
+  const { policy } = useAuth();
+  const currentPlan = policy?.plan ?? 'FREE';
+  if (plan === 'FREE') return <>{children}</>;
+  if (currentPlan === 'PREMIUM') return <>{children}</>;
+  return <>{fallback ?? null}</>;
 }

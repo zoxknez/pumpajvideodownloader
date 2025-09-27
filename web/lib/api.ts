@@ -1,11 +1,51 @@
 import { getSupabase } from './supabaseClient';
 
-const API_BASE = (process.env.NEXT_PUBLIC_API || '').replace(/\/$/, '');
+function normalizeBase(value?: string | null): string {
+  if (!value) return '';
+  const trimmed = value.trim();
+  if (!trimmed) return '';
+  return trimmed.replace(/\/$/, '');
+}
 
-function apiUrl(path: string): string {
-  const base = API_BASE;
-  if (!base) return path;
-  return `${base}${path}`;
+const API_BASE_RUNTIME = (() => {
+  const envBase = normalizeBase(process.env.NEXT_PUBLIC_API ?? '');
+  if (envBase) return envBase;
+
+  // LocalStorage override (manual user runtime override)
+  try {
+    if (typeof window !== 'undefined') {
+      const lsOverride = normalizeBase(localStorage.getItem('pumpaj:apiBaseOverride'));
+      if (lsOverride) return lsOverride;
+    }
+  } catch {}
+
+  try {
+    if (typeof window !== 'undefined') {
+      const qs = new URLSearchParams(window.location.search);
+      const fromQuery = normalizeBase(qs.get('apiBase'));
+      if (fromQuery) return fromQuery;
+    }
+  } catch {}
+
+  try {
+    const fromGlobal = normalizeBase((globalThis as any)?.__API_BASE as string | undefined);
+    if (fromGlobal) return fromGlobal;
+  } catch {}
+
+  try {
+    if (typeof window !== 'undefined' && window.location?.protocol === 'file:') {
+      return 'http://127.0.0.1:5176';
+    }
+  } catch {}
+
+  return '';
+})();
+
+export const API_BASE = API_BASE_RUNTIME;
+
+export function apiUrl(path: string): string {
+  if (!API_BASE) return path;
+  return `${API_BASE}${path}`;
 }
 
 async function authHeaders(): Promise<Record<string, string>> {

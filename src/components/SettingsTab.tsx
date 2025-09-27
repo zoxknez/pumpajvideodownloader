@@ -1,10 +1,12 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Settings as SettingsIcon, Monitor, Download as DownloadIcon, Folder, Wifi, Cpu, Shield, Database, Zap, Activity, LogOut } from 'lucide-react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Settings as SettingsIcon, Monitor, Download as DownloadIcon, Folder, Wifi, Cpu, Shield, Database, Zap, Activity, LogOut, Sparkles } from 'lucide-react';
 import { getJobsSettings, updateJobsSettings, API_BASE, authHeaders } from '../lib/api';
 import { useClientSettings } from './SettingsContext';
 import { useToast } from './ToastProvider';
 import { getDefaultDirHandle, setDefaultDirHandle, clearDefaultDirHandle, ensureWritePermission } from '../lib/fsStore';
-import { useAuth } from './AuthProvider';
+import { useAuth, usePolicy } from './AuthProvider';
+import { PolicyBadge } from './PolicyBadge';
+import { openPremiumUpgrade } from '../lib/premium';
 
 interface SettingsSection {
   id: string;
@@ -12,6 +14,16 @@ interface SettingsSection {
   icon: React.ElementType;
   description: string;
 }
+
+const PREMIUM_BASELINE = {
+  maxHeight: 4320,
+  maxAudioKbps: 320,
+  playlistMax: 300,
+  batchMax: 10,
+  concurrentJobs: 4,
+};
+
+const PREMIUM_SPEED_LIMIT_LABEL = 'Bez limita';
 
 export const SettingsTab: React.FC = () => {
   const { settings: clientSettings, setSettings: setClientSettings } = useClientSettings();
@@ -60,7 +72,8 @@ export const SettingsTab: React.FC = () => {
   });
   const [serverStats, setServerStats] = useState<{ running: number; queued: number }>({ running: 0, queued: 0 });
   const apiBase = API_BASE; // use shared base (relative by default) to honor Vite proxy/backend dynamic port
-  const { me, policy, logout } = useAuth();
+  const { me, logout } = useAuth();
+  const policy = usePolicy();
   const importInputRef = useRef<HTMLInputElement | null>(null);
   const [savedAt, setSavedAt] = useState<number | null>(null);
   const [defaultDirName, setDefaultDirName] = useState<string>('');
@@ -194,7 +207,29 @@ export const SettingsTab: React.FC = () => {
     { id: 'advanced', title: 'Advanced', icon: Zap, description: 'Advanced technical settings' },
   ];
 
-  const planLabel = useMemo(() => policy?.plan || me?.plan || 'FREE', [policy, me]);
+  const isPremiumPlan = policy.plan === 'PREMIUM';
+
+  const planHighlights = useMemo(() => {
+    const formatSpeedLimit = (limit?: number) => (limit && limit > 0 ? `${limit} kbps limit` : PREMIUM_SPEED_LIMIT_LABEL);
+    const boolLabel = (value: boolean) => (value ? 'Dostupno' : 'Zaključano');
+    return [
+      { label: 'Video kvalitet', current: `${policy.maxHeight}p`, premium: `${PREMIUM_BASELINE.maxHeight}p`, unlocked: policy.maxHeight >= PREMIUM_BASELINE.maxHeight },
+      { label: 'Audio bitrate', current: `${policy.maxAudioKbps} kbps`, premium: `${PREMIUM_BASELINE.maxAudioKbps} kbps`, unlocked: policy.maxAudioKbps >= PREMIUM_BASELINE.maxAudioKbps },
+      { label: 'Playlist stavke', current: `${policy.playlistMax}`, premium: `${PREMIUM_BASELINE.playlistMax}`, unlocked: policy.playlistMax >= PREMIUM_BASELINE.playlistMax },
+      { label: 'Batch zadaci', current: `${policy.batchMax}`, premium: `${PREMIUM_BASELINE.batchMax}`, unlocked: policy.batchMax >= PREMIUM_BASELINE.batchMax },
+      { label: 'Paralelnih poslova', current: `${policy.concurrentJobs}`, premium: `${PREMIUM_BASELINE.concurrentJobs}`, unlocked: policy.concurrentJobs >= PREMIUM_BASELINE.concurrentJobs },
+      { label: 'Brzina preuzimanja', current: formatSpeedLimit(policy.speedLimitKbps), premium: PREMIUM_SPEED_LIMIT_LABEL, unlocked: !policy.speedLimitKbps },
+      { label: 'Titlovi', current: boolLabel(policy.allowSubtitles), premium: 'Dostupno', unlocked: policy.allowSubtitles },
+      { label: 'Poglavlja', current: boolLabel(policy.allowChapters), premium: 'Dostupno', unlocked: policy.allowChapters },
+      { label: 'Meta podaci', current: boolLabel(policy.allowMetadata), premium: 'Dostupno', unlocked: policy.allowMetadata },
+    ];
+  }, [policy]);
+
+  const lockedHighlightLabels = useMemo(() => planHighlights.filter((item) => !item.unlocked).map((item) => item.label), [planHighlights]);
+
+  const handleUpgradeClick = useCallback(() => {
+    openPremiumUpgrade('settings-plan-card');
+  }, []);
 
   const handleSettingChange = (key: string, value: any) => {
     setSettings((prev) => ({ ...prev, [key]: value }));
@@ -304,11 +339,55 @@ export const SettingsTab: React.FC = () => {
             {/* General */}
             {activeSection === 'general' && (
               <div className="space-y-6">
-                <div className="p-4 bg-emerald-500/10 border border-emerald-400/30 rounded-xl">
-                  <div className="flex flex-wrap items-center gap-3 justify-between">
-                    <div>
-                      <div className="text-white font-medium">Plan: <span className="px-2 py-0.5 rounded-full bg-white/10 border border-white/20 text-emerald-200 text-xs">{planLabel}</span></div>
-                      <div className="text-white/70 text-sm">Free plan. Login required. No premium features.</div>
+                <div className="rounded-2xl border border-white/15 bg-white/5 p-5 shadow-lg">
+                  <div className="flex flex-col gap-5 lg:flex-row lg:items-start">
+                    <PolicyBadge className="w-full lg:max-w-[260px]" />
+                    <div className="flex-1 space-y-4">
+                      <div>
+                        <div className="text-[11px] font-semibold uppercase tracking-wide text-white/60">Trenutni plan</div>
+                        <div className="text-lg font-semibold text-white">
+                          {isPremiumPlan ? 'Premium pristup aktivan' : 'Free plan aktivan'}
+                        </div>
+                        <div className="mt-1 text-[13px] text-white/70">
+                          {isPremiumPlan
+                            ? 'Uživaj u punom kvalitetu, titlovima i prioritetnoj obradi.'
+                            : 'Dobijaš osnovne mogućnosti i ograničen kvalitet. Nadogradi za maksimalne brzine i dodatke.'}
+                        </div>
+                      </div>
+                      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3">
+                        {planHighlights.map((item) => (
+                          <div
+                            key={item.label}
+                            className={`rounded-xl border px-3 py-3 transition-colors ${
+                              item.unlocked
+                                ? 'border-emerald-400/40 bg-emerald-500/10 text-emerald-100'
+                                : 'border-white/15 bg-white/5 text-white/90'
+                            }`}
+                          >
+                            <div className="text-[11px] uppercase tracking-wide text-white/60">{item.label}</div>
+                            <div className="text-base font-semibold text-white">{item.current}</div>
+                            {!item.unlocked && item.premium && (
+                              <div className="mt-1 text-[11px] text-amber-200/90">Premium: {item.premium}</div>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                      {!isPremiumPlan && (
+                        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                          <div className="text-xs text-white/70">
+                            {lockedHighlightLabels.length > 0
+                              ? `Premium otključava: ${lockedHighlightLabels.join(', ')}`
+                              : 'Premium donosi veći kvalitet, brzine i prioritet u redu.'}
+                          </div>
+                          <button
+                            onClick={handleUpgradeClick}
+                            className="inline-flex items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-purple-600 to-pink-600 px-4 py-2 text-sm font-semibold text-white shadow-lg hover:from-purple-500 hover:to-pink-500"
+                          >
+                            <Sparkles className="h-4 w-4" />
+                            Saznaj više o Premium
+                          </button>
+                        </div>
+                      )}
                     </div>
                   </div>
                 </div>

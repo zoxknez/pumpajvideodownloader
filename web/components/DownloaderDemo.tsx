@@ -2,7 +2,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { getSupabase, isSupabaseConfigured } from '@/lib/supabaseClient';
 import type { AuthChangeEvent, Session } from '@supabase/supabase-js';
-import { postJSON, downloadJobFile } from '@/lib/api';
+import { apiUrl, postJSON, downloadJobFile } from '@/lib/api';
+// Toast system lives in root src (shared); we reuse it in web mode
+import { useToast } from '../../src/components/ToastProvider';
 
 export default function DownloaderDemo() {
   const [url, setUrl] = useState('');
@@ -13,8 +15,11 @@ export default function DownloaderDemo() {
   const [token, setToken] = useState<string>('');
   const [session, setSession] = useState<Session | null>(null);
   const [message, setMessage] = useState('');
+  // URL history (local, last 10 distinct)
+  const [history, setHistory] = useState<string[]>([]);
   const supabaseEnabled = isSupabaseConfigured();
   const sseRef = useRef<{ close: () => void } | null>(null);
+  const { success, error: toastError } = useToast();
 
   const isWorking = useMemo(() => ['queued', 'running', 'processing', 'downloading'].includes(stage), [stage]);
   const stageLabel = useMemo(() => {
@@ -30,6 +35,17 @@ export default function DownloaderDemo() {
     return mapping[stage] ?? stage;
   }, [stage]);
   const canStart = Boolean(token && url.trim());
+
+  // Load persisted URL history
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem('pumpaj:web:urlHistory');
+      if (raw) {
+        const arr = JSON.parse(raw);
+        if (Array.isArray(arr)) setHistory(arr.filter((x) => typeof x === 'string'));
+      }
+    } catch {/* ignore */}
+  }, []);
 
   useEffect(() => {
     if (!supabaseEnabled) {
@@ -65,6 +81,16 @@ export default function DownloaderDemo() {
     };
   }, [supabaseEnabled]);
 
+  function persistUrl(u: string) {
+    try {
+      setHistory((prev) => {
+        const next = [u, ...prev.filter((p) => p !== u)].slice(0, 10);
+        localStorage.setItem('pumpaj:web:urlHistory', JSON.stringify(next));
+        return next;
+      });
+    } catch {/* ignore */}
+  }
+
   async function startJob() {
     if (!supabaseEnabled) {
       setMessage('Web autentikacija nije dostupna. Molimo koristi desktop aplikaciju ili kontaktiraj podršku.');
@@ -79,17 +105,38 @@ export default function DownloaderDemo() {
     setStage('queued');
     setJobId(null);
     sseRef.current?.close();
-    let resp: { id: string };
-    try {
-      resp = await postJSON<{ id: string }>('/api/job/start/best', { url, title });
-    } catch (err: any) {
+    let resp: { id: string } | null = null;
+    // Retry logic with exponential backoff for transient errors
+    const maxAttempts = 3;
+    let attempt = 0;
+    while (attempt < maxAttempts && !resp) {
+      attempt++;
+      try {
+        resp = await postJSON<{ id: string }>('/api/job/start/best', { url, title });
+      } catch (err: any) {
+        const msg = (err?.message || '').toLowerCase();
+        const transient = /timeout|fetch|network|temporar|503|502|504/.test(msg);
+        if (attempt < maxAttempts && transient) {
+          // backoff 250ms, 750ms
+          await new Promise((r) => setTimeout(r, 250 * attempt * (attempt === 1 ? 1 : 3))); // 250, 750
+          continue;
+        }
+        setStage('error');
+        setMessage(err?.message || 'Pokretanje posla nije uspelo.');
+        toastError(err?.message || 'Pokretanje posla nije uspelo.', 'Greška');
+        return;
+      }
+    }
+    if (!resp) {
       setStage('error');
-      setMessage(err?.message || 'Pokretanje posla nije uspelo.');
+      setMessage('Nije moguće pokrenuti posao nakon više pokušaja.');
+      toastError('Nije moguće pokrenuti posao nakon više pokušaja.', 'Greška');
       return;
     }
     setJobId(resp.id);
-    const headers: Record<string, string> = token ? { Authorization: `Bearer ${token}` } : {};
-    const endpoint = `${process.env.NEXT_PUBLIC_API}/api/progress/${resp.id}`;
+    persistUrl(url.trim());
+  const headers: Record<string, string> = token ? { Authorization: `Bearer ${token}` } : {};
+  const endpoint = apiUrl(`/api/progress/${resp.id}`);
     const { sseSubscribe } = await import('@/utils/sseFetch');
     try {
       const handle = await sseSubscribe(
@@ -108,6 +155,7 @@ export default function DownloaderDemo() {
     } catch (err: any) {
       setStage('error');
       setMessage(err?.message || 'Greška u komunikaciji sa serverom.');
+      toastError(err?.message || 'Greška u komunikaciji sa serverom.', 'Greška');
     }
   }
 
@@ -122,6 +170,16 @@ export default function DownloaderDemo() {
       setMessage(err?.message || 'Odjava nije uspela.');
     }
   }
+
+  // Toasts on stage transitions
+  useEffect(() => {
+    if (stage === 'ended' && jobId) {
+      success('Fajl je spreman za preuzimanje.', 'Preuzimanje završeno');
+    } else if (stage === 'error') {
+      toastError(message || 'Došlo je do greške.', 'Greška');
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [stage, jobId]);
 
   return (
     <div className="pumpaj-card">
@@ -157,7 +215,15 @@ export default function DownloaderDemo() {
             value={url}
             onChange={(e) => setUrl(e.target.value)}
             inputMode="url"
+            list="url-history"
           />
+          {history.length > 0 && (
+            <datalist id="url-history">
+              {history.map((h) => (
+                <option key={h} value={h} />
+              ))}
+            </datalist>
+          )}
         </label>
         <label className="pumpaj-label">
           Output name (without extension)

@@ -3,7 +3,9 @@ import { DownloadCard } from './DownloadCard';
 import { Video, Crown, Zap, Shield, Play } from 'lucide-react';
 import { cancelJob, downloadJobFile, isJobFileReady, resolveFormatUrl, proxyDownload, startBestJob, subscribeJobProgress, jobFileUrl } from '../lib/api';
 import { ipcAvailable, startIpcAdvanced, onProgressIpc, onDoneIpc, revealPath, openPath } from '../lib/downloader';
+import { openPremiumUpgrade } from '../lib/premium';
 import { useToast } from './ToastProvider';
+import { usePolicy } from './AuthProvider';
 
 export interface VideoSectionProps {
   analysisData?: {
@@ -49,6 +51,7 @@ export const VideoSection: React.FC<VideoSectionProps> = ({ analysisData, onForm
   const directFallbackRef = useRef(false);
   const subRef = useRef<{ close: () => void } | null>(null);
   const { info, error: toastError } = useToast();
+  const policy = usePolicy();
   const [completedPath, setCompletedPath] = useState<string | null>(null);
 
 
@@ -175,6 +178,20 @@ export const VideoSection: React.FC<VideoSectionProps> = ({ analysisData, onForm
 
   const handleStartDownload = async () => {
     if (!analysisData?.sourceUrl) return;
+    const currentFormat = finalFormats?.[selectedFormat];
+    if (currentFormat) {
+      const curHeight = parseHeight(currentFormat.resolution, currentFormat.quality);
+      if (policy.maxHeight > 0 && curHeight > policy.maxHeight) {
+        toastError(
+          `FREE plan podržava do ${policy.maxHeight}p. Odaberi nižu rezoluciju ili nadogradi nalog.`,
+          'Premium feature',
+          { actionLabel: 'Upgrade', onAction: () => openPremiumUpgrade('video-start-limit') }
+        );
+        const fallbackIndex = finalFormats.findIndex((fmt: any) => parseHeight(fmt.resolution, fmt.quality) <= policy.maxHeight);
+        if (fallbackIndex >= 0) setSelectedFormat(fallbackIndex);
+        return;
+      }
+    }
     try {
       // If running in Electron IPC mode, use yt-dlp directly via IPC and skip HTTP jobs
       if (ipcAvailable) {
@@ -288,6 +305,10 @@ export const VideoSection: React.FC<VideoSectionProps> = ({ analysisData, onForm
     return (
       <DownloadCard title="Video Formats" icon={Video} variant="flat">
         <div className="space-y-4">
+          <div className="flex items-center justify-between text-xs text-white/60">
+            <span>Plan: <span className="font-medium text-white/80">{policy.plan}</span></span>
+            <span>Maks rez: <span className="text-white/80">{policy.maxHeight ? `${policy.maxHeight}p` : 'bez limita'}</span></span>
+          </div>
           {/* Enhanced styling below */}
 
           {/* Compact: remove large info & stats; keep clean list below */}
@@ -297,6 +318,12 @@ export const VideoSection: React.FC<VideoSectionProps> = ({ analysisData, onForm
     <div className="grid grid-cols-1 gap-2">
     {finalFormats?.map((format, index) => {
               const IconComponent = format.icon;
+              const limitExceeded = (() => {
+                const heightMatch = /x(\d+)/i.exec(format.resolution || '');
+                const qualityMatch = /(\d{3,4})p/i.exec(format.quality || '');
+                const height = heightMatch ? parseInt(heightMatch[1], 10) : qualityMatch ? parseInt(qualityMatch[1], 10) : 0;
+                return policy.maxHeight > 0 && height > policy.maxHeight;
+              })();
               return (
         <div
       key={format.formatId || format.url || `${format.format}-${format.quality}-${format.resolution}-${format.fps || ''}-${format.codec || ''}`}
@@ -304,8 +331,19 @@ export const VideoSection: React.FC<VideoSectionProps> = ({ analysisData, onForm
                     ${selectedFormat === index
                       ? 'bg-gradient-to-br from-blue-500/15 to-purple-500/10 border-blue-500/50 shadow-[0_10px_30px_-10px_rgba(59,130,246,0.6)]'
                       : 'bg-white/[0.06] border-white/10 hover:bg-white/[0.09] hover:border-white/20 hover:shadow-[0_10px_30px_-12px_rgba(0,0,0,0.5)]'}
+                    ${limitExceeded ? 'opacity-80 ring-1 ring-yellow-500/40 cursor-not-allowed' : ''}
                   `}
-                  onClick={() => handleFormatSelect(index)}
+                  onClick={() => {
+                    if (limitExceeded) {
+                      toastError(
+                        `FREE plan podržava do ${policy.maxHeight}p. Nadogradnja otključava ${format.quality}.`,
+                        'Premium feature',
+                        { actionLabel: 'Upgrade', onAction: () => openPremiumUpgrade('video-quality-select') }
+                      );
+                      return;
+                    }
+                    handleFormatSelect(index);
+                  }}
                 >
                   {/* Inline badges instead of floating absolute */}
 
@@ -333,6 +371,9 @@ export const VideoSection: React.FC<VideoSectionProps> = ({ analysisData, onForm
                           {format.resolution} • {format.size} • {format.bitrate || 'Auto bitrate'}
                         </div>
                         {format.codec && <div className="text-[11px] text-slate-300/80">Codec: {format.codec}</div>}
+                        {limitExceeded && (
+                          <div className="text-[11px] text-yellow-200/90">FREE plan preuzima do {policy.maxHeight}p (veća rezolucija biće automatski ograničena).</div>
+                        )}
                       </div>
                     </div>
                     <div className="w-4 h-4 rounded-full border-2 border-slate-400/80 flex items-center justify-center">

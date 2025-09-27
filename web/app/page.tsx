@@ -10,6 +10,7 @@ import { SettingsProvider } from '../../src/components/SettingsContext';
 import { ToastProvider } from '../../src/components/ToastProvider';
 import { AuthProvider } from '../../src/components/AuthProvider';
 import { initRandomSingleBounce } from '../../src/lib/singleBounce';
+import { SessionExpiryBanner } from '@/components/SessionExpiryBanner';
 
 function AttentionAnimator() {
   useEffect(() => {
@@ -92,6 +93,7 @@ export default function HomePage() {
           <ToastProvider>
             <AttentionAnimator />
             {content}
+            <SessionExpiryBanner />
           </ToastProvider>
         </SettingsProvider>
       </AuthProvider>

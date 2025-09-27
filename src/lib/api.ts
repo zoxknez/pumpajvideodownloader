@@ -604,3 +604,39 @@ export async function updateJobsSettings(input: JobsSettings): Promise<JobsSetti
     limitRateKbps: Number(j?.limitRateKbps ?? input.limitRateKbps ?? 0) || 0,
   };
 }
+
+// ---------------- Batch API (server-side managed) ----------------
+export type BatchSummary = {
+  id: string; mode: 'video'|'audio'; format?: string; total: number;
+  completed: number; failed: number; canceled: number; running: number; queued: number;
+  createdAt: number; finishedAt: number | null;
+  items: { url: string; jobId: string; status: string; progress: number }[];
+};
+
+async function apiJson<T>(path: string, init: RequestInit = {}): Promise<T> {
+  const res = await withTimeout<Response>((signal) => fetch(`${API_BASE}${path}`, {
+    ...init,
+    signal,
+    headers: authHeaders({ 'Content-Type': 'application/json', ...(init.headers || {}) }),
+  }));
+  if (!res.ok) {
+    const txt = await res.text().catch(() => '');
+    throw new Error(txt || `API ${res.status}`);
+  }
+  return res.json();
+}
+
+export async function createBatch(urls: string[], mode: 'video'|'audio', audioFormat = 'm4a', titleTemplate?: string) {
+  return apiJson<{ batchId: string; total: number; items: { url: string; jobId: string }[] }>(`/api/batch`, {
+    method: 'POST',
+    body: JSON.stringify({ urls, mode, audioFormat, titleTemplate })
+  });
+}
+
+export async function getBatch(id: string) {
+  return apiJson<BatchSummary>(`/api/batch/${encodeURIComponent(id)}`);
+}
+
+export async function cancelBatch(id: string) {
+  return apiJson<{ ok: boolean }>(`/api/batch/${encodeURIComponent(id)}/cancel`, { method: 'POST' });
+}

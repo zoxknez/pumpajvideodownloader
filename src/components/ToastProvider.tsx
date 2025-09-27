@@ -9,9 +9,19 @@ export type ToastOptions = {
   message: string;
   type?: ToastType;
   durationMs?: number;
+  actionLabel?: string;
+  onAction?: () => void;
 };
 
-type ToastItem = Required<Omit<ToastOptions, 'durationMs'>> & { durationMs: number };
+type ToastItem = {
+  id: string;
+  title: string;
+  message: string;
+  type: ToastType;
+  durationMs: number;
+  actionLabel?: string;
+  onAction?: () => void;
+};
 
 const ToastCtx = createContext<{
   show: (opts: ToastOptions) => string;
@@ -36,6 +46,8 @@ export const ToastProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       message: opts.message,
       type: opts.type || 'info',
       durationMs: Math.max(1500, Math.min(10000, opts.durationMs ?? 4000)),
+      actionLabel: opts.actionLabel,
+      onAction: opts.onAction,
     };
     setToasts((prev) => [...prev, item]);
     // auto dismiss
@@ -56,10 +68,21 @@ export const ToastProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       {children}
       <div className="fixed top-4 right-4 z-[1000] space-y-3">
         {toasts.map((t) => (
-          <div key={t.id} className={`min-w-[260px] max-w-[380px] p-4 rounded-xl shadow-xl text-white bg-gradient-to-br border ${color(t.type)} backdrop-blur`}> 
-            {t.title && <div className="font-semibold mb-1">{t.title}</div>}
-            <div className="text-sm opacity-95">{t.message}</div>
-            <button onClick={() => dismiss(t.id)} className="absolute top-1 right-2 text-white/70 hover:text-white text-xs">✕</button>
+          <div key={t.id} className={`relative min-w-[260px] max-w-[380px] p-4 rounded-xl shadow-xl text-white bg-gradient-to-br border ${color(t.type)} backdrop-blur`}>
+            {t.title && <div className="font-semibold mb-1 pr-6">{t.title}</div>}
+            <div className="text-sm opacity-95 pr-6">{t.message}</div>
+            {t.actionLabel && (
+              <button
+                onClick={() => {
+                  try { t.onAction?.(); } catch {}
+                  dismiss(t.id);
+                }}
+                className="mt-3 inline-flex items-center justify-center rounded-lg bg-white/20 px-3 py-1 text-xs font-medium text-white hover:bg-white/30 transition"
+              >
+                {t.actionLabel}
+              </button>
+            )}
+            <button onClick={() => dismiss(t.id)} className="absolute top-1.5 right-2 text-white/70 hover:text-white text-xs">✕</button>
           </div>
         ))}
       </div>
@@ -74,9 +97,9 @@ export function useToast() {
   return {
     toast: show,
     dismiss,
-    success: (message: string, title = 'Success') => show({ message, title, type: 'success' }),
-    error: (message: string, title = 'Error') => show({ message, title, type: 'error' }),
-    info: (message: string, title = 'Info') => show({ message, title, type: 'info' }),
-    warning: (message: string, title = 'Warning') => show({ message, title, type: 'warning' }),
+    success: (message: string, title = 'Success', opts?: Partial<Omit<ToastOptions, 'message' | 'title' | 'type'>>) => show({ message, title, type: 'success', ...opts }),
+    error: (message: string, title = 'Error', opts?: Partial<Omit<ToastOptions, 'message' | 'title' | 'type'>>) => show({ message, title, type: 'error', ...opts }),
+    info: (message: string, title = 'Info', opts?: Partial<Omit<ToastOptions, 'message' | 'title' | 'type'>>) => show({ message, title, type: 'info', ...opts }),
+    warning: (message: string, title = 'Warning', opts?: Partial<Omit<ToastOptions, 'message' | 'title' | 'type'>>) => show({ message, title, type: 'warning', ...opts }),
   };
 }

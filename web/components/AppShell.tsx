@@ -13,7 +13,12 @@ import {
 } from 'lucide-react';
 import DesktopApp from './DesktopApp';
 import { UserBadge } from './UserBadge';
-import { API_BASE, authHeaders } from '../../src/lib/api';
+// Koristimo web varijantu API utila umesto desktop src putanje
+import { API_BASE, apiUrl } from '@/lib/api';
+import { getSupabase } from '@/lib/supabaseClient';
+import { ApiBaseOverride } from './ApiBaseOverride';
+import { LogViewer } from './LogViewer';
+import { HealthPanel } from './HealthPanel';
 
 type MainTab = 'download' | 'queue' | 'history' | 'batch' | 'settings';
 
@@ -33,7 +38,6 @@ const tabs: Array<{ id: MainTab; label: string; icon: ComponentType<{ className?
   { id: 'settings', label: 'Podešavanja', icon: SettingsIcon },
 ];
 
-const resolvedApiBase = API_BASE || '';
 
 export function AppShell() {
   const [activeTab, setActiveTab] = useState<MainTab>('download');
@@ -68,10 +72,12 @@ export function AppShell() {
 
   useEffect(() => {
     let disposed = false;
+    let consecutive401 = 0;
 
     const fetchStatus = async () => {
+      // Health
       try {
-        const health = await fetch(`${resolvedApiBase}/health`, { cache: 'no-store' });
+  const health = await fetch(apiUrl('/health'), { cache: 'no-store' });
         if (!disposed) {
           setApiStatus(health.ok ? 'online' : 'offline');
           setLastChecked(Date.now());
@@ -80,10 +86,22 @@ export function AppShell() {
         if (!disposed) setApiStatus('offline');
       }
 
+      // Metrics (zahtev traži auth token ako je korisnik prijavljen)
       try {
-        const res = await fetch(`${resolvedApiBase}/api/jobs/metrics`, {
+        const supabase = getSupabase();
+        let token: string | undefined;
+        if (supabase) {
+          const { data } = await supabase.auth.getSession();
+          token = data.session?.access_token || undefined;
+        }
+        if (!token) {
+          // nema tokena => preskačemo metrics i resetujemo brojač 401
+          consecutive401 = 0;
+          return;
+        }
+  const res = await fetch(apiUrl('/api/jobs/metrics'), {
           cache: 'no-store',
-          headers: authHeaders(),
+          headers: token ? { Authorization: `Bearer ${token}` } : {},
         });
         if (res.ok) {
           const data = await res.json();
@@ -94,9 +112,16 @@ export function AppShell() {
               maxConcurrent: typeof data.maxConcurrent === 'number' ? data.maxConcurrent : undefined,
             });
           }
+          consecutive401 = 0;
+        } else if (res.status === 401) {
+          consecutive401++;
+          // After 3 consecutive unauthorized responses, slow down polling for metrics
+          if (consecutive401 >= 3) {
+            return; // leave health polling intact; metrics will retry on next interval after user logs in
+          }
         }
       } catch {
-        /* ignore metrics errors */
+        /* metrics mogu da padnu bez kvara UI-a */
       }
     };
 
@@ -201,8 +226,21 @@ export function AppShell() {
         )}
       </header>
 
-      <main className="pt-6 lg:pt-10">
+      {/* Upozorenje ako API_BASE nije setovan (pomaže kod 404 ka Vercel /api) */}
+      {!API_BASE && (
+        <div className="bg-amber-600/20 text-amber-100 border-b border-amber-400/30 text-xs px-4 py-2 text-center">
+          API_BASE nije eksplicitno postavljen (NEXT_PUBLIC_API ili ?apiBase=). Ako vidiš 404 na /api/* rutama, dodaj ?apiBase=https://tvoj-backend.up.railway.app ili postavi env varijablu.
+        </div>
+      )}
+      <main className="pt-6 lg:pt-10 space-y-6">
+        <ApiBaseOverride />
         <DesktopApp />
+        {activeTab === 'settings' && (
+          <>
+            <HealthPanel />
+            <LogViewer />
+          </>
+        )}
       </main>
     </div>
   );

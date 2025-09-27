@@ -7,6 +7,7 @@ import { HistoryTab } from './components/HistoryTab';
 import { BatchTab } from './components/BatchTab';
 import { SettingsTab } from './components/SettingsTab';
 import { AnalysisResults } from './components/AnalysisResults';
+import { PolicyBadge } from './components/PolicyBadge';
 import { API_BASE, analyzeUrl, getJobsSettings, authHeaders } from './lib/api';
 import { getDefaultDirHandle } from './lib/fsStore';
 import { Download, Search, Clipboard, Trash2, Sparkles, Settings, Monitor, History as HistoryIcon, Clock, Heart } from 'lucide-react';
@@ -281,6 +282,7 @@ function App() {
   };
 
   const handleClear = () => {
+              <PolicyBadge className="ml-2 w-full sm:w-auto" />
   setUrl('');
     setIsAnalyzed(false);
   setAnalysisJson(null);

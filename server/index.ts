@@ -84,6 +84,18 @@ const running = new Set<string>();
 let MAX_CONCURRENT = 2;
 let PROXY_URL: string | undefined;
 let LIMIT_RATE: number | undefined; // in KiB/s
+// --- Batch tracking (in-memory) ---
+type BatchItem = { url: string; jobId: string };
+type Batch = {
+  id: string;
+  userId?: string;
+  createdAt: number;
+  finishedAt?: number;
+  mode: 'video' | 'audio';
+  format?: string; // audio format if audio mode
+  items: BatchItem[];
+};
+const batches = new Map<string, Batch>();
 // Load persisted setting if present
 try {
   const saved = readServerSettings();
@@ -126,6 +138,20 @@ function getFreeDiskBytes(dir: string): number {
     }
   } catch {}
   return -1;
+}
+
+function formatDuration(seconds: number): string {
+  const s = Math.max(0, Math.floor(seconds));
+  const days = Math.floor(s / 86_400);
+  const hours = Math.floor((s % 86_400) / 3_600);
+  const minutes = Math.floor((s % 3_600) / 60);
+  const secs = s % 60;
+  const parts: string[] = [];
+  if (days) parts.push(`${days}d`);
+  if (hours || parts.length) parts.push(`${hours}h`);
+  parts.push(`${minutes}m`);
+  if (!parts.length || (!days && !hours)) parts.push(`${secs}s`);
+  return parts.join(' ');
 }
 
 // ytdlp is a function that runs the yt-dlp binary; the package manages the binary on Windows.
@@ -199,6 +225,26 @@ app.get('/api/version', (_req, res) => {
         proxyUrl: PROXY_URL || '',
         limitRateKbps: LIMIT_RATE || 0,
       },
+      uptimeSeconds: Math.floor(process.uptime()),
+      uptimeLabel: formatDuration(process.uptime()),
+      disk: (() => {
+        const freeBytes = getFreeDiskBytes(os.tmpdir());
+        return {
+          tmpDir: os.tmpdir(),
+          freeMB: freeBytes >= 0 ? Math.floor(freeBytes / (1024 * 1024)) : -1,
+          freeBytes,
+        };
+      })(),
+      queues: {
+        totalJobs: jobs.size,
+        running: running.size,
+        waiting: waiting.length,
+      },
+      batches: (() => {
+        let active = 0;
+        for (const b of batches.values()) if (!b.finishedAt) active++;
+        return { total: batches.size, active };
+      })(),
     };
     res.json(info);
   } catch (err: any) {
@@ -219,6 +265,61 @@ app.get('/api/logs/tail', (req, res) => {
     res.json({ lines: tail });
   } catch (err: any) {
     res.status(500).json({ error: 'tail_failed', details: String(err?.message || err) });
+  }
+});
+
+// Recent logs with optional severity filter & search (lightweight; no streaming)
+app.get('/api/logs/recent', (req, res) => {
+  try {
+    const logDir = path.resolve(process.cwd(), 'logs');
+    const logFile = path.join(logDir, 'app.log');
+    if (!fs.existsSync(logFile)) return res.json({ lines: [] });
+    const max = Math.max(1, Math.min(1000, parseInt(String(req.query.lines || '300'), 10) || 300));
+    const level = String(req.query.level || '').toLowerCase(); // debug|info|warn|error optional
+    const q = String(req.query.q || '').trim().toLowerCase(); // substring match
+    // Read once
+    const buf = fs.readFileSync(logFile, 'utf8');
+    let lines = buf.split(/\r?\n/).filter(Boolean);
+    // Filter by level token "| LEVEL |" to avoid false positives
+    if (level && ['debug','info','warn','error'].includes(level)) {
+      const token = `| ${level.toUpperCase()} |`;
+      lines = lines.filter(l => l.includes(token));
+    }
+    if (q) {
+      lines = lines.filter(l => l.toLowerCase().includes(q));
+    }
+    const out = lines.slice(-max);
+    res.json({ lines: out, count: out.length });
+  } catch (err: any) {
+    res.status(500).json({ error: 'recent_failed', details: String(err?.message || err) });
+  }
+});
+
+// Download logs as text/plain (same filters as /api/logs/recent)
+app.get('/api/logs/download', (req, res) => {
+  try {
+    const logDir = path.resolve(process.cwd(), 'logs');
+    const logFile = path.join(logDir, 'app.log');
+    if (!fs.existsSync(logFile)) {
+      res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+      return res.end('');
+    }
+    const max = Math.max(1, Math.min(5000, parseInt(String(req.query.lines || '1000'), 10) || 1000));
+    const level = String(req.query.level || '').toLowerCase();
+    const q = String(req.query.q || '').trim().toLowerCase();
+    const buf = fs.readFileSync(logFile, 'utf8');
+    let lines = buf.split(/\r?\n/).filter(Boolean);
+    if (level && ['debug','info','warn','error'].includes(level)) {
+      const token = `| ${level.toUpperCase()} |`;
+      lines = lines.filter(l => l.includes(token));
+    }
+    if (q) lines = lines.filter(l => l.toLowerCase().includes(q));
+    const out = lines.slice(-max).join('\n');
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    res.setHeader('Content-Disposition', 'attachment; filename="logs.txt"');
+    res.end(out);
+  } catch (err: any) {
+    res.status(500).json('download_failed: ' + String(err?.message || err));
   }
 });
 
@@ -339,6 +440,43 @@ function updateHistoryThrottled(id: string, pct?: number, extra?: Record<string,
 }
 function clearHistoryThrottle(id: string) { lastPctWritten.delete(id); }
 
+// Summarize a batch status on demand
+function summarizeBatch(b: Batch) {
+  const items = readHistory();
+  let completed = 0, failed = 0, canceled = 0, runningCt = 0, queuedCt = 0;
+  for (const it of b.items) {
+    const h = items.find(x => x.id === it.jobId);
+    switch (h?.status) {
+      case 'completed': completed++; break;
+      case 'failed': failed++; break;
+      case 'canceled': canceled++; break;
+      case 'in-progress': runningCt++; break;
+      case 'queued': queuedCt++; break;
+    }
+  }
+  const total = b.items.length;
+  const done = completed + failed + canceled;
+  if (!b.finishedAt && done === total) b.finishedAt = Date.now();
+  return {
+    id: b.id,
+    userId: b.userId,
+    createdAt: b.createdAt,
+    finishedAt: b.finishedAt || null,
+    mode: b.mode,
+    format: b.format,
+    total,
+    completed,
+    failed,
+    canceled,
+    running: runningCt,
+    queued: queuedCt,
+    items: b.items.map(it => {
+      const h = items.find(x => x.id === it.jobId);
+      return { url: it.url, jobId: it.jobId, status: h?.status || 'unknown', progress: h?.progress ?? 0 };
+    })
+  };
+}
+
 
 // Remove temporary files produced/created by a job (best-effort)
 function cleanupJobFiles(job: Job) {
@@ -358,6 +496,125 @@ function cleanupJobFiles(job: Job) {
 app.get('/api/jobs/metrics', requireAuth as any, (_req, res) => {
   res.json({ running: running.size, queued: waiting.length, maxConcurrent: MAX_CONCURRENT });
 });
+
+// Create a batch of jobs (video or audio). Body: { urls: string[], mode: 'video'|'audio', audioFormat?: 'mp3'|'m4a', titleTemplate?: string }
+app.post('/api/batch', requireAuth as any, async (req: any, res) => {
+  try {
+    const { urls, mode = 'video', audioFormat = 'm4a', titleTemplate } = (req.body || {}) as { urls?: string[]; mode?: 'video'|'audio'; audioFormat?: string; titleTemplate?: string };
+    if (!Array.isArray(urls) || !urls.length) return res.status(400).json({ error: 'missing_urls' });
+    const policy = policyFor(req.user?.plan);
+    const unique = Array.from(new Set(urls.map(u => String(u || '').trim()).filter(u => /^https?:\/\//i.test(u))));
+    if (!unique.length) return res.status(400).json({ error: 'no_valid_urls' });
+    if (unique.length > policy.batchMax) return res.status(400).json({ error: 'BATCH_LIMIT_EXCEEDED', limit: policy.batchMax });
+    const batchId = randomUUID();
+    const batch: Batch = { id: batchId, userId: req.user?.id, createdAt: Date.now(), mode, format: mode === 'audio' ? audioFormat : undefined, items: [] };
+    batches.set(batchId, batch);
+    // Enqueue each URL as a job using existing start endpoints logic (inline, simplified)
+    for (const u of unique) {
+      const title = titleTemplate ? titleTemplate.replace(/\{index\}/g, String(batch.items.length + 1)) : (mode === 'audio' ? 'audio' : 'video');
+      const tmpDir = os.tmpdir();
+      const tmpId = randomUUID();
+      const outPath = path.join(fs.realpathSync(tmpDir), `${tmpId}.%(ext)s`);
+      const hist = appendHistory({ title, url: u, type: mode, format: mode === 'audio' ? String(audioFormat).toUpperCase() : 'MP4', status: 'queued' });
+      const job: Job = { id: hist.id, type: mode, tmpId, tmpDir, userId: (req.user?.id || 'anon'), concurrencyCap: policy.concurrentJobs };
+      jobs.set(hist.id, job);
+      batch.items.push({ url: u, jobId: hist.id });
+      emitProgress(hist.id, { progress: 0, stage: 'queued', batchId });
+      const run = () => {
+        const policyCur = policyFor(req.user?.plan);
+        const commonArgs: any = {
+          output: outPath,
+          addHeader: makeHeaders(u),
+          restrictFilenames: true,
+          noCheckCertificates: true,
+          noWarnings: true,
+          newline: true,
+          ffmpegLocation: ffmpegBinary || undefined,
+          proxy: PROXY_URL,
+          limitRate: (() => {
+            const gl = Number(LIMIT_RATE || 0); const pl = Number(policyCur.speedLimitKbps || 0); const chosen = (gl > 0 && pl > 0) ? Math.min(gl, pl) : (gl > 0 ? gl : (pl > 0 ? pl : 0)); return chosen > 0 ? `${chosen}K` : undefined; })(),
+          ...(cfg.maxFileSizeMb ? { maxFilesize: `${cfg.maxFileSizeMb}M` } : {}),
+          ...(cfg.maxDurationSec ? { matchFilter: `duration <= ${cfg.maxDurationSec}` } : {}),
+          ...ytDlpArgsFromPolicy(policyCur),
+          ...speedyDlArgs(),
+        };
+        let child: any;
+        if (mode === 'audio') {
+          child = (ytdlp as any).exec(u, { extractAudio: true, audioFormat: String(audioFormat).toLowerCase(), ...commonArgs }, { env: cleanedChildEnv(process.env) });
+        } else {
+          child = (ytdlp as any).exec(u, { format: `bv*[height<=?${policyCur.maxHeight}]+ba/b[height<=?${policyCur.maxHeight}]`, mergeOutputFormat: 'mp4', ...commonArgs }, { env: cleanedChildEnv(process.env) });
+        }
+        job.child = child;
+        const onProgress = (buf: Buffer) => {
+          const text = buf.toString();
+            const { pct, speed, eta } = parseDlLine(text);
+            if (typeof pct === 'number') { updateHistoryThrottled(hist.id, pct); emitProgress(hist.id, { progress: pct, stage: 'downloading', speed, eta, batchId }); }
+            if (/Merging formats|merging|ExtractAudio|convert|Destination|Embedding subtitles/i.test(text)) emitProgress(hist.id, { stage: 'processing', batchId });
+        };
+        child.stdout?.on('data', onProgress);
+        child.stderr?.on('data', onProgress);
+        child.on('close', (code: number) => {
+          running.delete(hist.id);
+          try {
+            const dir = fs.readdirSync(tmpDir);
+            const produced = dir.find((f) => f.startsWith(tmpId + '.'));
+            if (code === 0 && produced) {
+              job.produced = produced;
+              const full = path.join(tmpDir, produced);
+              let sizeMb = 0; try { sizeMb = Math.round(fs.statSync(full).size / 1024 / 1024); } catch {}
+              updateHistory(hist.id, { status: 'completed', progress: 100, size: `${sizeMb} MB` });
+              clearHistoryThrottle(hist.id);
+              emitProgress(hist.id, { progress: 100, stage: 'completed', batchId });
+              const listeners = (sseListeners.get(hist.id) || new Set());
+              for (const r of listeners) { try { r.write(`event: end\n` + `data: ${JSON.stringify({ id: hist.id, status: 'completed', batchId })}\n\n`); } catch {} }
+              try { sseListeners.delete(hist.id); } catch {}
+            } else {
+              updateHistory(hist.id, { status: 'failed' }); clearHistoryThrottle(hist.id); emitProgress(hist.id, { stage: 'failed', batchId });
+            }
+          } catch {}
+          schedule();
+        });
+      };
+      waiting.push({ job, run });
+    }
+    schedule();
+    return res.json({ batchId, total: batch.items.length, items: batch.items });
+  } catch (e: any) {
+    return res.status(500).json({ error: 'batch_create_failed', message: String(e?.message || e) });
+  }
+});
+
+// Get batch summary
+app.get('/api/batch/:id', requireAuth as any, (req: any, res) => {
+  const b = batches.get(req.params.id);
+  if (!b) return res.status(404).json({ error: 'not_found' });
+  if (b.userId && b.userId !== req.user?.id) return res.status(403).json({ error: 'forbidden' });
+  return res.json(summarizeBatch(b));
+});
+
+// Cancel an entire batch (queued + running jobs)
+app.post('/api/batch/:id/cancel', requireAuth as any, (req: any, res) => {
+  const b = batches.get(req.params.id);
+  if (!b) return res.status(404).json({ error: 'not_found' });
+  if (b.userId && b.userId !== req.user?.id) return res.status(403).json({ error: 'forbidden' });
+  for (const it of b.items) {
+    const job = jobs.get(it.jobId);
+    if (!job) continue;
+    const idx = waiting.findIndex(w => w.job.id === it.jobId);
+    if (idx >= 0) {
+      waiting.splice(idx, 1);
+      updateHistory(it.jobId, { status: 'canceled' }); clearHistoryThrottle(it.jobId); emitProgress(it.jobId, { stage: 'canceled', batchId: b.id });
+      try { cleanupJobFiles(job); jobs.delete(it.jobId); } catch {}
+      continue;
+    }
+    try { job.child?.kill('SIGTERM'); } catch {}
+    updateHistory(it.jobId, { status: 'canceled' }); clearHistoryThrottle(it.jobId); emitProgress(it.jobId, { stage: 'canceled', batchId: b.id });
+    try { running.delete(it.jobId); } catch {}
+  }
+  b.finishedAt = Date.now();
+  return res.json({ ok: true });
+});
+
 
 // Read/update job settings (currently only max concurrency)
 app.get('/api/jobs/settings', requireAuth as any, (_req, res) => {

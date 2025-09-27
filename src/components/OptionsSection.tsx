@@ -1,6 +1,9 @@
 import React, { useState } from 'react';
 import { DownloadCard } from './DownloadCard';
 import { Settings, Zap, Shield, Cpu, HardDrive, Wifi, Crown, Rocket, FolderOpen, Clock } from 'lucide-react';
+import { usePolicy } from './AuthProvider';
+import { useToast } from './ToastProvider';
+import { openPremiumUpgrade } from '../lib/premium';
  
 
 export interface OptionsSectionProps {
@@ -32,6 +35,21 @@ export const OptionsSection: React.FC<OptionsSectionProps> = ({ systemData, anal
     highPriority: true,
     autoConvert: analysisData?.canAutoConvert || false,
   });
+  const policy = usePolicy();
+  const { warning } = useToast();
+  const planSummaryParts = [
+    `Video do ${policy.maxHeight}p`,
+    `Audio do ${policy.maxAudioKbps} kbps`,
+    `Batch ${policy.batchMax}`,
+  ];
+  const disabledMap: Partial<Record<keyof typeof options, boolean>> = {
+    autoSubtitles: !policy.allowSubtitles,
+    autoConvert: !policy.allowMetadata,
+  };
+  const reasonMap: Partial<Record<keyof typeof options, string>> = {
+    autoSubtitles: 'Titlovi dostupni samo uz Premium.',
+    autoConvert: 'Pametna konverzija je Premium pogodnost.',
+  };
   
 
   const connectionStatus = systemData?.connectionStatus;
@@ -39,6 +57,11 @@ export const OptionsSection: React.FC<OptionsSectionProps> = ({ systemData, anal
 
   if (analysisData || systemData) {
     const toggleOption = (key: keyof typeof options) => {
+      if (disabledMap[key]) {
+        const reason = reasonMap[key] || 'Opcija je dostupna samo Premium korisnicima.';
+  warning(reason, 'Premium feature', { actionLabel: 'Upgrade', onAction: () => openPremiumUpgrade(`options-${key}`) });
+        return;
+      }
       const newOptions = { ...options, [key]: !options[key] };
       setOptions(newOptions);
       onOptionsChange?.(newOptions);
@@ -71,6 +94,10 @@ export const OptionsSection: React.FC<OptionsSectionProps> = ({ systemData, anal
     return (
   <DownloadCard title="Download Settings" icon={Settings} variant="flat">
         <div className="space-y-4">
+          <div className="flex items-center justify-between text-xs text-white/60">
+            <span>Plan: <span className="font-medium text-white/80">{policy.plan}</span></span>
+            <span className="text-white/50">{planSummaryParts.join(' • ')}</span>
+          </div>
           {/* Thumbnails (integrated) */}
           {/* Real-time System Status */}
           <div className="grid grid-cols-3 gap-2">
@@ -113,6 +140,10 @@ export const OptionsSection: React.FC<OptionsSectionProps> = ({ systemData, anal
 
           <div className="space-y-3">
             {optionsList.map(({ key, label, icon: Icon, color }) => (
+              (() => {
+                const disabled = Boolean(disabledMap[key as keyof typeof options]);
+                const reason = reasonMap[key as keyof typeof options];
+                return (
               <div key={key as string} className="flex items-center justify-between p-3 rounded-lg bg-white/5 border border-white/10 hover:bg-white/10 hover:border-white/20 transition-all duration-300 group">
                 <div className="flex items-center gap-3">
                   <Icon className={`w-4 h-4 ${color} group-hover:scale-110 transition-transform duration-300`} />
@@ -121,13 +152,23 @@ export const OptionsSection: React.FC<OptionsSectionProps> = ({ systemData, anal
 
                 <button
                   onClick={() => toggleOption(key as keyof typeof options)}
-                  className={`relative w-11 h-6 rounded-full transition-all duration-300 shadow-inner ${options[key as keyof typeof options] ? 'bg-gradient-to-r from-blue-500 to-purple-600 shadow-lg shadow-blue-500/25' : 'bg-slate-600 hover:bg-slate-500'}`}
+                  disabled={disabled}
+                  className={`relative w-11 h-6 rounded-full transition-all duration-300 shadow-inner ${disabled
+                    ? 'bg-slate-700 cursor-not-allowed opacity-50'
+                    : options[key as keyof typeof options]
+                    ? 'bg-gradient-to-r from-blue-500 to-purple-600 shadow-lg shadow-blue-500/25'
+                    : 'bg-slate-600 hover:bg-slate-500'}`}
                 >
                   <div className={`absolute top-0.5 w-5 h-5 rounded-full bg-white shadow-lg transition-all duration-300 ease-out ${options[key as keyof typeof options] ? 'translate-x-5 shadow-lg shadow-blue-500/25' : 'translate-x-0.5'}`}>
                     {options[key as keyof typeof options] && <div className="absolute inset-0 rounded-full bg-gradient-to-br from-blue-400 to-purple-500 opacity-20 animate-pulse" />}
                   </div>
                 </button>
+                {reason && (
+                  <div className="text-[11px] text-yellow-300 mt-2">{reason}</div>
+                )}
               </div>
+                );
+              })()
             ))}
           </div>
 
