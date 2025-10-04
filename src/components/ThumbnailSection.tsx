@@ -1,7 +1,7 @@
 import React, { useRef, useState } from 'react';
 import { DownloadCard } from './DownloadCard';
 import { Image, Sparkles, Crown, Eye, Download as DownloadIcon } from 'lucide-react';
-import { proxyDownload } from '../lib/api';
+import { proxyDownload, ProxyDownloadError } from '../lib/api';
 import { useToast } from './ToastProvider';
 
 export interface ThumbnailSectionProps {
@@ -31,7 +31,7 @@ export const ThumbnailSection: React.FC<ThumbnailSectionProps> = ({ analysisData
   const [thumbEta, setThumbEta] = useState<string>('');
   const [downloading, setDownloading] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
-  const { success } = useToast();
+  const { success, error: toastError } = useToast();
 
   if (analysisData) {
     const thumbnails = analysisData.thumbnails?.map((thumb) => ({
@@ -138,7 +138,8 @@ export const ThumbnailSection: React.FC<ThumbnailSectionProps> = ({ analysisData
             onClick={async () => {
               const chosen = thumbnails[selectedThumbnail];
               if (chosen?.url) {
-                const name = `${analysisData.videoTitle || 'thumbnail'}_${chosen.quality}.jpg`.replace(/[^\w.-]+/g, '_');
+                const base = (analysisData.videoTitle || 'thumbnail').replace(/[^\w.-]+/g, '_') || 'thumbnail';
+                const name = `${base}_${chosen.quality}.jpg`;
                 setDownloading(true); setThumbPct(undefined); setThumbSpeed(''); setThumbEta('');
                 abortRef.current?.abort();
                 abortRef.current = new AbortController();
@@ -147,6 +148,11 @@ export const ThumbnailSection: React.FC<ThumbnailSectionProps> = ({ analysisData
                     setThumbPct(p.pct); setThumbSpeed(p.speed || ''); setThumbEta(p.eta || '');
                   }, signal: abortRef.current.signal });
                   success('Saving file…', 'Saving file');
+                } catch (err: any) {
+                  if (err?.name !== 'AbortError') {
+                    const msg = err instanceof ProxyDownloadError ? err.message : 'Thumbnail download failed.';
+                    toastError(msg);
+                  }
                 } finally {
                   setDownloading(false); setTimeout(() => { setThumbPct(undefined); setThumbSpeed(''); setThumbEta(''); }, 1000);
                 }

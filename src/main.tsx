@@ -8,6 +8,7 @@ import { ErrorBoundary } from './components/ErrorBoundary';
 import { AuthProvider, LoginGate } from './components/AuthProvider';
 import './index.css';
 import { initRandomSingleBounce } from './lib/singleBounce';
+import './telemetry/init';
 
 function Root() {
   useEffect(() => {

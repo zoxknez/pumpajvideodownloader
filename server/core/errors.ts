@@ -12,5 +12,8 @@ export function normalizeYtError(e: any) {
   if (/Unsupported URL|No video formats|no such format/i.test(msg)) {
     return { status: 422, code: 'UNSUPPORTED_URL', message: 'Unsupported URL or no formats' };
   }
+  if (/rate limit|too many requests|429/i.test(msg)) {
+    return { status: 429, code: 'UPSTREAM_RATELIMIT', message: 'Upstream rate-limited' };
+  }
   return { status: 500, code: 'YTDLP_ERROR', message: 'Extractor error' };
 }

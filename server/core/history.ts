@@ -56,29 +56,47 @@ const MAX_HISTORY = parseInt(process.env.MAX_HISTORY || '2000', 10);
 
 export function writeHistory(items: HistoryItem[]) {
   ensure();
-  const pruned = items.slice(0, MAX_HISTORY);
+  const pruned = items.slice(-MAX_HISTORY);
   fs.writeFileSync(FILE, JSON.stringify(pruned, null, 2), 'utf8');
 }
 
 export function appendHistory(partial: Omit<HistoryItem, 'id' | 'downloadDate'> & { id?: string; downloadDate?: string }): HistoryItem {
+  ensure();
   const items = readHistory();
+  const now = new Date().toISOString();
+  const id = partial.id || randomUUID();
+  const existingIdx = items.findIndex((entry) => entry.id === id);
+  if (existingIdx >= 0) items.splice(existingIdx, 1);
+
   const item: HistoryItem = {
-    id: partial.id || randomUUID(),
-    downloadDate: partial.downloadDate || new Date().toISOString().replace('T', ' ').slice(0, 16),
-    ...partial,
-  } as HistoryItem;
-  items.unshift(item);
+    id,
+    title: (partial.title || 'job').slice(0, 300),
+    url: partial.url,
+    thumbnail: partial.thumbnail,
+    type: partial.type,
+    format: partial.format,
+    quality: partial.quality,
+    size: partial.size,
+    downloadDate: partial.downloadDate || now,
+    status: partial.status,
+    progress: clampProgress(partial.progress),
+  };
+
+  items.push(item);
   writeHistory(items);
   return item;
 }
 
 export function updateHistory(id: string, updates: Partial<HistoryItem>) {
+  ensure();
   const items = readHistory();
   const idx = items.findIndex((i) => i.id === id);
   if (idx >= 0) {
-    items[idx] = { ...items[idx], ...updates } as HistoryItem;
+    const next = { ...items[idx], ...updates } as HistoryItem;
+    next.progress = clampProgress(next.progress);
+    items[idx] = next;
     writeHistory(items);
-    return items[idx];
+    return next;
   }
   return null;
 }
@@ -91,4 +109,9 @@ export function removeHistory(id: string) {
 
 export function clearHistory() {
   writeHistory([]);
+}
+
+function clampProgress(value: number | undefined) {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return undefined;
+  return Math.max(0, Math.min(100, Math.floor(value)));
 }

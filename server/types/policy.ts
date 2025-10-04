@@ -18,7 +18,6 @@ export const POLICIES: Record<Plan, Policy> = {
     plan: 'FREE', maxHeight: 720, maxAudioKbps: 128,
     playlistMax: 10, batchMax: 2, concurrentJobs: 1,
     allowSubtitles: false, allowChapters: false, allowMetadata: false,
-    speedLimitKbps: 1500,
   },
   PREMIUM: {
     plan: 'PREMIUM', maxHeight: 4320, maxAudioKbps: 320,

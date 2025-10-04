@@ -2,8 +2,9 @@
 // ESM + TypeScript (Node 18+). Zadržava postojeći API i ponašanje.
 
 import express, { type Response, type NextFunction } from 'express';
-import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
+import rateLimit from 'express-rate-limit';
 import cors from 'cors';
+import type { CorsOptions } from 'cors';
 import ytdlp from 'youtube-dl-exec';
 import path from 'node:path';
 import { Readable } from 'node:stream';
@@ -32,6 +33,15 @@ import { ytDlpArgsFromPolicy } from './core/policyEnforce.js';
 import { authActivate } from './routes/authActivate.js';
 import { requireAuth } from './middleware/auth.js';
 import { policyFor } from './core/policy.js';
+import { HttpError } from './core/httpError.js';
+import { wrap } from './core/wrap.js';
+import { mountPromMetrics } from './routes/metricsProm.js';
+import { createMetricsRegistry } from './core/metrics.js';
+import { tokenBucket } from './middleware/tokenBucket.js';
+import { requireAuthOrSigned } from './middleware/signed.js';
+import { metricsMiddleware, signIssued, signTtl } from './middleware/httpMetrics.js';
+import { signToken } from './core/signed.js';
+import { traceContext } from './middleware/trace.js';
 
 // ---- Optional ffmpeg-static (fallback na system ffmpeg) ----
 let ffmpegBinary: string | undefined;
@@ -43,10 +53,29 @@ try {
 // ---- App init / middleware ----
 const log = getLogger('server');
 const cfg = loadConfig();
-const proxyDownload = createProxyDownloadHandler(cfg);
+export const metrics = createMetricsRegistry();
+const proxyDownload = createProxyDownloadHandler(cfg, metrics);
+const MIN_FREE_DISK_BYTES =
+  typeof cfg.minFreeDiskMb === 'number' && cfg.minFreeDiskMb > 0
+    ? Math.floor(cfg.minFreeDiskMb * 1024 * 1024)
+    : 0;
+
+const proxyBucket = tokenBucket({ rate: 120, burst: 180 });
+const jobBucket = tokenBucket({ rate: 180, burst: 240 });
+const progressBucket = tokenBucket({ rate: 240, burst: 360 });
+const signBucket = tokenBucket({ rate: 60, burst: 120 });
 
 export const app = express();
-app.set('trust proxy', 1);
+
+const trustedProxyCidrs = (process.env.TRUST_PROXY_CIDRS || '')
+  .split(',')
+  .map((s) => s.trim())
+  .filter(Boolean);
+if (trustedProxyCidrs.length > 0) {
+  app.set('trust proxy', trustedProxyCidrs);
+} else {
+  app.set('trust proxy', ['loopback', 'linklocal', 'uniquelocal']);
+}
 applySecurity(app, process.env.CORS_ORIGIN);
 
 // Rate limit (global + token-aware za job/download)
@@ -55,12 +84,26 @@ const limiter = rateLimit({ windowMs: 60_000, max: 120 });
 app.use(limiter);
 
 // CORS
-app.use(
-  cors({
-    origin: buildCorsOrigin(process.env.CORS_ORIGIN),
-    exposedHeaders: ['Content-Disposition', 'Content-Length', 'Content-Type'],
-  })
-);
+const corsOptions: CorsOptions = {
+  origin: buildCorsOrigin(process.env.CORS_ORIGIN),
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS', 'HEAD'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'Accept', 'X-Requested-With'],
+  exposedHeaders: ['Content-Disposition', 'Content-Length', 'Content-Type', 'X-Request-Id', 'Proxy-Status', 'Retry-After', 'X-Traceparent'],
+  maxAge: 86400,
+};
+app.use(cors(corsOptions));
+app.use((req, res, next) => {
+  if (req.method === 'OPTIONS') {
+    res.status(204).end();
+    return;
+  }
+  next();
+});
+app.use((_req, res, next) => {
+  res.setHeader('Vary', 'Origin');
+  next();
+});
 
 // Minimalna HPP sanitizacija (query samo 1 vrednost po ključu)
 app.use((req, _res, next) => {
@@ -81,8 +124,14 @@ app.use((req, res, next) => {
 });
 
 // JSON
+app.use(express.urlencoded({ extended: false, limit: '100kb' }));
 app.use(express.json({ limit: '200kb' }));
+app.use(traceContext);
 app.use(requestLogger);
+mountPromMetrics(app, metrics);
+app.use('/api/proxy-download', metricsMiddleware('proxy-download'));
+app.use('/api/job/file/:id', metricsMiddleware('job-file'));
+app.use('/api/progress/:id', metricsMiddleware('progress'));
 
 // ========================
 // Globalno stanje poslova
@@ -96,12 +145,32 @@ type Job = {
   produced?: string; // basename u tmpDir kad završi
   userId?: string; // za per-user concurrency
   concurrencyCap?: number;
+  version: number;
 };
+
+function bumpJobVersion(job?: Job) {
+  if (!job) return;
+  const current = Number.isFinite(job.version) ? job.version : 0;
+  job.version = Math.max(1, current + 1);
+}
 
 const jobs = new Map<string, Job>();
 type WaitingItem = { job: Job; run: () => void };
 const waiting: WaitingItem[] = [];
 const running = new Set<string>(); // jobIds
+const sseListeners = new Map<string, Set<Response>>();
+const sseBuffers = new Map<string, string[]>();
+const SSE_BUFFER_SIZE = 20;
+
+Object.assign(app.locals as Record<string, unknown>, {
+  jobs,
+  waiting,
+  running,
+  sseListeners,
+  sseBuffers,
+  minFreeDiskBytes: MIN_FREE_DISK_BYTES,
+  metrics,
+});
 
 let MAX_CONCURRENT = 2;
 let PROXY_URL: string | undefined;
@@ -141,30 +210,67 @@ const trunc = (s: string, n = 100) => (s.length > n ? s.slice(0, n) : s);
 const safeName = (input: string, max = 100) =>
   trunc((input || '').replace(/[\n\r"\\]/g, '').replace(/[^\w.-]+/g, '_'), max);
 
+function hasProgressHint(text: string, needles: string[]): boolean {
+  if (!text) return false;
+  const lower = text.toLowerCase();
+  return needles.some((needle) => lower.includes(needle));
+}
+
+function appendVary(res: Response, value: string) {
+  const existing = res.getHeader('Vary');
+  if (!existing) {
+    res.setHeader('Vary', value);
+    return;
+  }
+  const parts = String(existing)
+    .split(',')
+    .map((part) => part.trim())
+    .filter(Boolean);
+  if (!parts.includes(value)) parts.push(value);
+  res.setHeader('Vary', parts.join(', '));
+}
+
+function parseDfFreeBytes(output: string): number {
+  const lines = String(output || '').trim().split(/\r?\n/);
+  for (let i = lines.length - 1; i >= 0; i -= 1) {
+    const parts = lines[i]?.trim().split(/\s+/) ?? [];
+    if (parts.length >= 4) {
+      const availKb = Number(parts[3]);
+      if (Number.isFinite(availKb)) return availKb * 1024;
+    }
+  }
+  return -1;
+}
+
+function parseWmicFreeBytes(output: string, drive: string): number {
+  const normalizedDrive = drive.replace(/\\$/, '');
+  const lines = String(output || '').trim().split(/\r?\n/).slice(1);
+  for (const line of lines) {
+    if (!line || !line.includes(normalizedDrive)) continue;
+    const parts = line.trim().split(/\s+/);
+    if (parts.length >= 2) {
+      const free = Number(parts[1]);
+      if (Number.isFinite(free)) return free;
+    }
+  }
+  return -1;
+}
+
 // df / wmic: best-effort slobodan prostor (bytes ili -1)
 function getFreeDiskBytes(dir: string): number {
   try {
     if (process.platform !== 'win32') {
       const out = spawnSync('df', ['-k', dir], { encoding: 'utf8' });
       if (out.status === 0) {
-  const lines = String(out.stdout || '').trim().split(/\r?\n/);
-  const last = lines[lines.length - 1] || '';
-  const data = last.trim().split(/\s+/);
-  const availKb = Number(data[3] || 0);
-        if (Number.isFinite(availKb)) return availKb * 1024;
+        const parsed = parseDfFreeBytes(String(out.stdout || ''));
+        if (parsed >= 0) return parsed;
       }
     } else {
       const out = spawnSync('wmic', ['logicaldisk', 'get', 'size,freespace,caption'], { encoding: 'utf8' });
       if (out.status === 0) {
-        const lines = String(out.stdout || '').trim().split(/\r?\n/).slice(1);
-        const drive = path.parse(path.resolve(dir)).root.replace(/\\$/, '');
-        for (const ln of lines) {
-          const parts = ln.trim().split(/\s+/);
-          if (parts.length >= 3 && ln.includes(drive)) {
-            const free = Number(parts[1]);
-            if (Number.isFinite(free)) return free;
-          }
-        }
+        const drive = path.parse(path.resolve(dir)).root;
+        const parsed = parseWmicFreeBytes(String(out.stdout || ''), drive);
+        if (parsed >= 0) return parsed;
       }
     }
   } catch {}
@@ -208,6 +314,42 @@ function makeHeaders(u: string): string[] {
   return ['user-agent: Mozilla/5.0'];
 }
 
+const AUDIO_FORMAT_ALIASES = new Map<string, string>([
+  ['m4a', 'm4a'],
+  ['m4b', 'm4a'],
+  ['mp4a', 'm4a'],
+  ['aac', 'aac'],
+  ['mp3', 'mp3'],
+  ['mpeg', 'mp3'],
+  ['mpga', 'mp3'],
+  ['opus', 'opus'],
+  ['vorbis', 'vorbis'],
+  ['ogg', 'vorbis'],
+  ['oga', 'vorbis'],
+  ['flac', 'flac'],
+  ['wav', 'wav'],
+  ['alac', 'alac'],
+]);
+const DEFAULT_AUDIO_FORMAT = 'm4a';
+
+function coerceAudioFormat(input: unknown, fallback = DEFAULT_AUDIO_FORMAT): string | null {
+  const raw = typeof input === 'string' ? input : input == null ? '' : String(input);
+  const trimmed = raw.trim().toLowerCase();
+  if (!trimmed) return fallback;
+  if (trimmed === 'best') return fallback;
+  return AUDIO_FORMAT_ALIASES.get(trimmed) ?? null;
+}
+
+function trapChildPromise(child: any, label: string) {
+  if (child && typeof child.catch === 'function') {
+    child.catch((err: any) => {
+      try {
+        log.error(label, err?.message || err);
+      } catch {}
+    });
+  }
+}
+
 // Unified: izvuče %/brzinu/ETA iz yt-dlp linije
 function parseDlLine(text: string): { pct?: number; speed?: string; eta?: string } {
   const pctMatch = text.match(/(\d{1,3}(?:\.\d+)?)%/);
@@ -233,32 +375,49 @@ function findProducedFile(tmpDir: string, tmpId: string, exts: string[]) {
 }
 
 // ========================
-// SSE listeners
+// SSE listeners & ring buffer
 // ========================
-const sseListeners = new Map<string, Set<Response>>();
 function addSseListener(id: string, res: Response) {
   if (!sseListeners.has(id)) sseListeners.set(id, new Set());
   sseListeners.get(id)!.add(res);
 }
+
 function removeSseListener(id: string, res: Response) {
   const set = sseListeners.get(id);
   if (!set) return;
   set.delete(res);
   if (set.size === 0) sseListeners.delete(id);
 }
-function emitProgress(id: string, data: any) {
-  const set = sseListeners.get(id);
-  if (!set || set.size === 0) return;
-  const payload = `data: ${JSON.stringify({ id, ...data })}\n\n`;
-  for (const res of Array.from(set)) {
-    try {
-      res.write(payload);
-    } catch {
-      try { res.end(); } catch {}
-      try { set.delete(res); } catch {}
-    }
+
+function pushSse(id: string, payload: any, event?: string, explicitId?: number) {
+  const eventId = explicitId ?? Date.now();
+  const frame = `${event ? `event: ${event}\n` : ''}id: ${eventId}\n` + `data: ${JSON.stringify(payload)}\n\n`;
+  let buf = sseBuffers.get(id);
+  if (!buf) {
+    buf = [];
+    sseBuffers.set(id, buf);
   }
-  if (set.size === 0) sseListeners.delete(id);
+  buf.push(frame);
+  if (buf.length > SSE_BUFFER_SIZE) buf.shift();
+
+  const set = sseListeners.get(id);
+  if (set && set.size > 0) {
+    for (const res of Array.from(set)) {
+      try {
+        res.write(frame);
+      } catch {
+        try { res.end(); } catch {}
+        try { set.delete(res); } catch {}
+      }
+    }
+    if (set.size === 0) sseListeners.delete(id);
+  }
+
+  return eventId;
+}
+
+function emitProgress(id: string, data: any) {
+  pushSse(id, { id, ...data });
 }
 
 // ========================
@@ -284,6 +443,7 @@ function clearHistoryThrottle(id: string) {
 }
 
 function cleanupJobFiles(job: Job) {
+  bumpJobVersion(job);
   try {
     const list = fs.readdirSync(job.tmpDir);
     for (const f of list) {
@@ -294,6 +454,59 @@ function cleanupJobFiles(job: Job) {
     }
   } catch {}
 }
+
+type JobTerminalStatus = 'completed' | 'failed' | 'canceled';
+type FinalizeJobOptions = {
+  job?: Job;
+  keepJob?: boolean;
+  keepFiles?: boolean;
+  removeListeners?: boolean;
+  extra?: Record<string, unknown>;
+};
+
+function finalizeJob(id: string, status: JobTerminalStatus, options: FinalizeJobOptions = {}) {
+  const {
+    job,
+    keepJob = status === 'completed',
+    keepFiles = status === 'completed',
+    removeListeners = true,
+    extra,
+  } = options;
+
+  try { clearHistoryThrottle(id); } catch {}
+
+  pushSse(id, { id, status, ...(extra || {}) }, 'end');
+
+  if (removeListeners) {
+    const set = sseListeners.get(id);
+    if (set) {
+      for (const res of Array.from(set)) {
+        try { res.end(); } catch {}
+        try { set.delete(res); } catch {}
+      }
+      if (set.size === 0) {
+        try { sseListeners.delete(id); } catch {}
+      }
+    }
+  }
+
+  if (!keepFiles && job) {
+    try { cleanupJobFiles(job); } catch {}
+  }
+
+  if (!keepJob) {
+    try { jobs.delete(id); } catch {}
+  }
+
+  try { running.delete(id); } catch {}
+}
+
+Object.assign(app.locals as Record<string, unknown>, {
+  finalizeJob,
+  pushSse,
+  emitProgress,
+  minFreeDiskBytes: MIN_FREE_DISK_BYTES,
+});
 
 function schedule() {
   const runningCountFor = (uid?: string) => {
@@ -425,9 +638,10 @@ app.get('/api/version', (_req, res) => {
       const out = spawnSync('yt-dlp', ['--version'], { encoding: 'utf8' });
       if (out?.status === 0) ytVersion = String(out.stdout || '').trim();
     } catch {}
+  const ffmpegPath = ffmpegBinary || 'ffmpeg';
     let ffmpegVersion = '';
     try {
-      const out = spawnSync('ffmpeg', ['-version'], { encoding: 'utf8' });
+      const out = spawnSync(ffmpegPath, ['-version'], { encoding: 'utf8' });
       if (out?.status === 0) ffmpegVersion = String(out.stdout || '').split(/\r?\n/, 1)[0];
     } catch {}
     const freeBytes = getFreeDiskBytes(os.tmpdir());
@@ -437,11 +651,12 @@ app.get('/api/version', (_req, res) => {
       node: process.version,
       platform: `${process.platform} ${process.arch}`,
       ytDlp: ytVersion || 'unknown',
-      ffmpeg: ffmpegBinary || 'system/unknown',
+      ffmpeg: ffmpegBinary ? 'bundled' : ffmpegVersion ? 'system' : 'system/unknown',
+      ffmpegPath,
       ffmpegVersion: ffmpegVersion || '',
       checks: {
         ytdlpAvailable: Boolean(ytVersion),
-        ffmpegAvailable: Boolean(ffmpegVersion || ffmpegBinary),
+        ffmpegAvailable: Boolean(ffmpegVersion),
       },
       port: cfg.port,
       settings: {
@@ -455,6 +670,8 @@ app.get('/api/version', (_req, res) => {
         tmpDir: os.tmpdir(),
         freeMB: freeBytes >= 0 ? Math.floor(freeBytes / (1024 * 1024)) : -1,
         freeBytes,
+        guardMinMB: MIN_FREE_DISK_BYTES > 0 ? Math.floor(MIN_FREE_DISK_BYTES / (1024 * 1024)) : 0,
+        guardEnabled: MIN_FREE_DISK_BYTES > 0,
       },
       queues: {
         totalJobs: jobs.size,
@@ -551,8 +768,7 @@ app.delete('/api/history/:id', requireAuth as any, (req, res) => {
       const idx = waiting.findIndex((w) => w.job.id === id);
       if (idx >= 0) waiting.splice(idx, 1);
       try { job.child?.kill('SIGTERM'); } catch {}
-      cleanupJobFiles(job);
-      jobs.delete(id);
+      finalizeJob(id, 'canceled', { job, keepJob: false, keepFiles: false });
     }
     removeHistory(id);
     res.json({ ok: true });
@@ -633,7 +849,7 @@ app.post('/api/analyze', requireAuth as any, async (req: any, res, next: NextFun
   } catch (err: any) {
     const { status, code, message } = normalizeYtError(err);
     log.error('analyze_failed', err?.message || err);
-    return next({ status, code, message });
+    return next(new HttpError(status, code, message));
   }
 });
 
@@ -641,10 +857,36 @@ app.post('/api/analyze', requireAuth as any, async (req: any, res, next: NextFun
 // Proxy download
 // ========================
 const proxyLimiter = rateLimit({ windowMs: 60_000, max: (cfg.proxyDownloadMaxPerMin ?? 60) });
-app.get('/api/proxy-download', requireAuth as any, proxyLimiter, proxyDownload);
+app.get('/api/proxy-download', requireAuth as any, proxyBucket, proxyLimiter, wrap(proxyDownload));
 
 // Token-aware limiter za /api/download i /api/job
-const keyer = (req: any) => (req.user?.id ? String(req.user.id) : ipKeyGenerator(req));
+const extractForwardedFor = (value: string | string[] | undefined): string | undefined => {
+  if (!value) return undefined;
+  if (Array.isArray(value)) {
+    for (const entry of value) {
+      if (typeof entry === 'string' && entry.trim()) {
+        return entry.split(',')[0]?.trim() || undefined;
+      }
+    }
+    return undefined;
+  }
+  const first = value.split(',')[0]?.trim();
+  return first || undefined;
+};
+
+const resolveClientIp = (req: any): string => {
+  try {
+    const forwarded = extractForwardedFor(req?.headers?.['x-forwarded-for']);
+    if (forwarded) return forwarded;
+  } catch {}
+  const ip = req?.ip || req?.socket?.remoteAddress || (req as any)?.connection?.remoteAddress;
+  return typeof ip === 'string' && ip ? ip : 'unknown';
+};
+
+const keyer = (req: any) => {
+  if (req.user?.id) return String(req.user.id);
+  return resolveClientIp(req);
+};
 const dlLimiter = rateLimit({ windowMs: 60_000, max: 20, keyGenerator: keyer });
 app.use(['/api/download', '/api/job'], requireAuth as any, dlLimiter);
 
@@ -654,8 +896,10 @@ app.use(['/api/download', '/api/job'], requireAuth as any, dlLimiter);
 app.post('/api/get-url', requireAuth as any, async (req, res, next: NextFunction) => {
   try {
     const { url, formatId } = req.body as { url?: string; formatId?: string };
-    if (!formatId || !isUrlAllowed(url, cfg)) return res.status(400).json({ error: 'missing_or_invalid_params' });
-    await assertPublicHttpHost(url!);
+    if (!url || !formatId || !isUrlAllowed(url, cfg)) {
+      return res.status(400).json({ error: 'missing_or_invalid_params' });
+    }
+    await assertPublicHttpHost(url);
     const output: string = await (ytdlp as any)(
       url,
       {
@@ -663,7 +907,7 @@ app.post('/api/get-url', requireAuth as any, async (req, res, next: NextFunction
         format: formatId,
         noCheckCertificates: true,
         noWarnings: true,
-        addHeader: makeHeaders(url!),
+        addHeader: makeHeaders(url),
         ...(cfg.maxFileSizeMb ? { maxFilesize: `${cfg.maxFileSizeMb}M` } : {}),
         ...(cfg.maxDurationSec ? { matchFilter: `duration <= ${cfg.maxDurationSec}` } : {}),
       },
@@ -673,7 +917,7 @@ app.post('/api/get-url', requireAuth as any, async (req, res, next: NextFunction
     res.json({ url: lines[0] || '' });
   } catch (err: any) {
     log.error('get_url_failed', err?.message || err);
-    return next({ status: 400, code: 'GET_URL_FAILED', message: String(err?.stderr || err?.message || err) });
+    return next(new HttpError(400, 'GET_URL_FAILED', String(err?.stderr || err?.message || err)));
   }
 });
 
@@ -698,6 +942,8 @@ app.get('/api/download/best', requireAuth as any, async (req: any, res) => {
     histId = hist.id;
     emitProgress(hist.id, { progress: 0, stage: 'starting' });
 
+    let stream: fs.ReadStream | null = null;
+
     const child = (ytdlp as any).exec(
       sourceUrl,
       {
@@ -720,13 +966,20 @@ app.get('/api/download/best', requireAuth as any, async (req: any, res) => {
     );
 
     let aborted = false;
-    const abort = () => {
-      if (aborted) return;
+    let completed = false;
+    const handleAbort = () => {
+      if (aborted || res.writableFinished) return;
       aborted = true;
       try { child.kill('SIGTERM'); } catch {}
+      try { stream?.destroy(); } catch {}
+      try { updateHistory(hist.id, { status: 'canceled' }); } catch {}
+      try { clearHistoryThrottle(hist.id); } catch {}
+      try { emitProgress(hist.id, { stage: 'canceled' }); } catch {}
+      try { pushSse(hist.id, { id: hist.id, status: 'canceled' }, 'end'); } catch {}
+      try { sseListeners.delete(hist.id); } catch {}
     };
-    res.on('close', abort);
-    res.on('aborted', abort);
+    res.on('close', handleAbort);
+    res.on('aborted', handleAbort);
 
     const onProgress = (buf: Buffer) => {
       const text = buf.toString();
@@ -735,7 +988,7 @@ app.get('/api/download/best', requireAuth as any, async (req: any, res) => {
         updateHistoryThrottled(hist.id, pct);
         emitProgress(hist.id, { progress: pct, stage: 'downloading' });
       }
-      if (/Merging formats|merging/i.test(text)) {
+      if (hasProgressHint(text, ['merging formats', 'merging'])) {
         updateHistoryThrottled(hist.id, 95);
         emitProgress(hist.id, { progress: 95, stage: 'merging' });
       }
@@ -759,19 +1012,25 @@ app.get('/api/download/best', requireAuth as any, async (req: any, res) => {
     const safe = safeName(title || 'video');
     res.setHeader('Content-Disposition', `attachment; filename="${safe}${ext}"`);
     res.setHeader('Content-Length', String(stat.size));
+    res.setHeader('Cache-Control', 'no-store');
+    res.setHeader('Accept-Ranges', 'bytes');
     if (req.method === 'HEAD') return res.end();
 
-    const stream = fs.createReadStream(full);
+    stream = fs.createReadStream(full);
     stream.pipe(res);
     stream.on('close', () => { fs.unlink(full, () => {}); });
 
-    updateHistory(hist.id, { status: 'completed', progress: 100, size: `${Math.round(stat.size / 1024 / 1024)} MB` });
-    clearHistoryThrottle(hist.id);
-    emitProgress(hist.id, { progress: 100, stage: 'completed', size: stat.size });
+    const finalize = () => {
+      if (aborted || completed) return;
+      completed = true;
+      updateHistory(hist.id, { status: 'completed', progress: 100, size: `${Math.round(stat.size / 1024 / 1024)} MB` });
+      clearHistoryThrottle(hist.id);
+      emitProgress(hist.id, { progress: 100, stage: 'completed', size: stat.size });
+      try { pushSse(hist.id, { id: hist.id, status: 'completed' }, 'end'); } catch {}
+      try { sseListeners.delete(hist.id); } catch {}
+    };
 
-    const listeners = (sseListeners.get(hist.id) || new Set());
-    for (const r of listeners) { try { r.write(`event: end\n` + `data: ${JSON.stringify({ id: hist.id, status: 'completed' })}\n\n`); } catch {} }
-    try { sseListeners.delete(hist.id); } catch {}
+    res.on('finish', finalize);
   } catch (err: any) {
     log.error('download_best_failed', err?.message || err);
     if (histId) {
@@ -779,8 +1038,7 @@ app.get('/api/download/best', requireAuth as any, async (req: any, res) => {
       clearHistoryThrottle(histId);
       try {
         emitProgress(histId, { stage: 'failed' });
-        const listeners = (sseListeners.get(histId) || new Set());
-        for (const r of listeners) { try { r.write(`event: end\n` + `data: ${JSON.stringify({ id: histId, status: 'failed' })}\n\n`); } catch {} }
+        pushSse(histId, { id: histId, status: 'failed' }, 'end');
         try { sseListeners.delete(histId); } catch {}
       } catch {}
     }
@@ -794,7 +1052,8 @@ app.get('/api/download/best', requireAuth as any, async (req: any, res) => {
 app.get('/api/download/audio', requireAuth as any, async (req: any, res) => {
   const sourceUrl = (req.query.url as string) || '';
   const title = (req.query.title as string) || 'audio';
-  const fmt = ((req.query.format as string) || 'm4a').toLowerCase(); // 'mp3' | 'm4a'
+  const fmt = coerceAudioFormat(req.query.format, DEFAULT_AUDIO_FORMAT);
+  if (!fmt) return res.status(400).json({ error: 'invalid_format' });
   if (!isUrlAllowed(sourceUrl, cfg)) return res.status(400).json({ error: 'invalid_url' });
   try { await assertPublicHttpHost(sourceUrl); } catch (e: any) { return res.status(400).json({ ok: false, error: { code: e?.code || 'SSRF_FORBIDDEN', message: e?.message || 'Forbidden host' } }); }
 
@@ -809,6 +1068,8 @@ app.get('/api/download/audio', requireAuth as any, async (req: any, res) => {
     const hist = appendHistory({ title, url: sourceUrl, type: 'audio', format: fmt.toUpperCase(), status: 'in-progress' });
     histId = hist.id;
     emitProgress(hist.id, { progress: 0, stage: 'starting' });
+
+    let stream: fs.ReadStream | null = null;
 
     const child = (ytdlp as any).exec(
       sourceUrl,
@@ -831,15 +1092,29 @@ app.get('/api/download/audio', requireAuth as any, async (req: any, res) => {
     );
 
     let aborted = false;
-    const abort = () => { if (!aborted) { aborted = true; try { child.kill('SIGTERM'); } catch {} } };
-    res.on('close', abort);
-    res.on('aborted', abort);
+    let completed = false;
+    const handleAbort = () => {
+      if (aborted || res.writableFinished) return;
+      aborted = true;
+      try { child.kill('SIGTERM'); } catch {}
+      try { stream?.destroy(); } catch {}
+      try { updateHistory(hist.id, { status: 'canceled' }); } catch {}
+      try { clearHistoryThrottle(hist.id); } catch {}
+      try { emitProgress(hist.id, { stage: 'canceled' }); } catch {}
+      try { pushSse(hist.id, { id: hist.id, status: 'canceled' }, 'end'); } catch {}
+      try { sseListeners.delete(hist.id); } catch {}
+    };
+    res.on('close', handleAbort);
+    res.on('aborted', handleAbort);
 
     const onProgress = (buf: Buffer) => {
       const text = buf.toString();
       const { pct } = parseDlLine(text);
       if (typeof pct === 'number') { updateHistoryThrottled(hist.id, pct); emitProgress(hist.id, { progress: pct, stage: 'downloading' }); }
-      if (/ExtractAudio|Destination|\bconvert\b|merging/i.test(text)) { updateHistoryThrottled(hist.id, 90); emitProgress(hist.id, { progress: 90, stage: 'converting' }); }
+      if (hasProgressHint(text, ['extractaudio', 'destination', 'convert', 'merging'])) {
+        updateHistoryThrottled(hist.id, 90);
+        emitProgress(hist.id, { progress: 90, stage: 'converting' });
+      }
     };
     child.stdout?.on('data', onProgress);
     child.stderr?.on('data', onProgress);
@@ -849,29 +1124,42 @@ app.get('/api/download/audio', requireAuth as any, async (req: any, res) => {
       child.on('close', (code: number) => (code === 0 ? resolve() : reject(new Error(`yt-dlp exited with code ${code}`))));
     });
 
-    const produced = findProducedFile(tmp, id, ['.mp3', '.m4a', '.aac', '.opus']);
+    const produced = findProducedFile(tmp, id, ['.mp3', '.m4a', '.aac', '.opus', '.flac', '.wav', '.ogg', '.oga', '.alac']);
     if (!produced) return res.status(500).json({ error: 'output_not_found' });
 
     const full = path.join(tmp, produced);
     const stat = fs.statSync(full);
-    const isMp3 = /\.mp3$/i.test(produced);
-    res.setHeader('Content-Type', isMp3 ? 'audio/mpeg' : 'audio/mp4');
+    const extname = path.extname(produced).replace(/^\./, '').toLowerCase();
+    const contentType =
+      extname === 'mp3' ? 'audio/mpeg'
+      : extname === 'opus' ? 'audio/opus'
+      : extname === 'ogg' || extname === 'oga' || extname === 'vorbis' ? 'audio/ogg'
+      : extname === 'wav' ? 'audio/wav'
+      : 'audio/mp4';
+    res.setHeader('Content-Type', contentType);
     const safe = safeName(title || 'audio');
-    const ext = isMp3 ? 'mp3' : 'm4a';
+    const ext = extname || fmt;
     res.setHeader('Content-Disposition', `attachment; filename="${safe}.${ext}"`);
     res.setHeader('Content-Length', String(stat.size));
+    res.setHeader('Cache-Control', 'no-store');
+    res.setHeader('Accept-Ranges', 'bytes');
     if (req.method === 'HEAD') return res.end();
 
-    const stream = fs.createReadStream(full);
+    stream = fs.createReadStream(full);
     stream.pipe(res);
     stream.on('close', () => { fs.unlink(full, () => {}); });
 
-    updateHistory(hist.id, { status: 'completed', progress: 100, size: `${Math.round(stat.size / 1024 / 1024)} MB` });
-    clearHistoryThrottle(hist.id);
-    emitProgress(hist.id, { progress: 100, stage: 'completed', size: stat.size });
-    const listeners = (sseListeners.get(hist.id) || new Set());
-    for (const r of listeners) { try { r.write(`event: end\n` + `data: ${JSON.stringify({ id: hist.id, status: 'completed' })}\n\n`); } catch {} }
-    try { sseListeners.delete(hist.id); } catch {}
+    const finalize = () => {
+      if (aborted || completed) return;
+      completed = true;
+      updateHistory(hist.id, { status: 'completed', progress: 100, size: `${Math.round(stat.size / 1024 / 1024)} MB` });
+      clearHistoryThrottle(hist.id);
+      emitProgress(hist.id, { progress: 100, stage: 'completed', size: stat.size });
+      try { pushSse(hist.id, { id: hist.id, status: 'completed' }, 'end'); } catch {}
+      try { sseListeners.delete(hist.id); } catch {}
+    };
+
+    res.on('finish', finalize);
   } catch (err: any) {
     log.error('download_audio_failed', err?.message || err);
     if (histId) {
@@ -879,8 +1167,7 @@ app.get('/api/download/audio', requireAuth as any, async (req: any, res) => {
       clearHistoryThrottle(histId);
       try {
         emitProgress(histId, { stage: 'failed' });
-        const listeners = (sseListeners.get(histId) || new Set());
-        for (const r of listeners) { try { r.write(`event: end\n` + `data: ${JSON.stringify({ id: histId, status: 'failed' })}\n\n`); } catch {} }
+        pushSse(histId, { id: histId, status: 'failed' }, 'end');
         try { sseListeners.delete(histId); } catch {}
       } catch {}
     }
@@ -903,6 +1190,7 @@ app.get('/api/download/chapter', requireAuth as any, async (req: any, res) => {
       return res.status(400).json({ error: 'invalid_params' });
     }
     await assertPublicHttpHost(sourceUrl);
+
     const policy = policyFor(req.user?.plan);
     if (!policy.allowChapters) return res.status(403).json({ error: 'CHAPTERS_NOT_ALLOWED' });
 
@@ -928,6 +1216,9 @@ app.get('/api/download/chapter', requireAuth as any, async (req: any, res) => {
       },
       { env: cleanedChildEnv(process.env) }
     );
+    trapChildPromise(child, 'yt_dlp_unhandled_clip');
+    trapChildPromise(child, 'yt_dlp_unhandled_clip_audio');
+    trapChildPromise(child, 'yt_dlp_unhandled_chapter');
     await new Promise<void>((resolve, reject) => {
       child.on('error', reject);
       child.on('close', (code: number) => (code === 0 ? resolve() : reject(new Error(`yt-dlp exit ${code}`))));
@@ -943,9 +1234,14 @@ app.get('/api/download/chapter', requireAuth as any, async (req: any, res) => {
     const safeChap = safeName(String(name || 'chapter'));
     res.setHeader('Content-Disposition', `attachment; filename="${safeBase}.${index}_${safeChap}${path.extname(full)}"`);
     res.setHeader('Content-Length', String(stat.size));
+    res.setHeader('Cache-Control', 'no-store');
+    res.setHeader('Accept-Ranges', 'bytes');
     if (req.method === 'HEAD') return res.end();
 
     const stream = fs.createReadStream(full);
+    const endStream = () => { try { stream.destroy(); } catch {} };
+    res.on('close', endStream);
+    res.on('aborted', endStream);
     stream.pipe(res);
     stream.on('close', () => { try { fs.unlinkSync(full); } catch {} });
   } catch (err: any) {
@@ -963,24 +1259,34 @@ app.post('/api/job/start/best', requireAuth as any, async (req: any, res: Respon
     if (!sourceUrl || !/^https?:\/\//i.test(sourceUrl) || !isUrlAllowed(sourceUrl, cfg)) return res.status(400).json({ error: 'invalid_url' });
     await assertPublicHttpHost(sourceUrl);
 
+    const requestUser = {
+      id: req.user?.id ?? 'anon',
+      username: req.user?.username,
+      plan: req.user?.plan ?? 'FREE',
+      planExpiresAt: req.user?.planExpiresAt ?? undefined,
+    } as const;
+    const policyAtQueue = policyFor(requestUser.plan);
+
     const tmpDir = os.tmpdir();
     const tmpId = randomUUID();
     const outPath = path.join(fs.realpathSync(tmpDir), `${tmpId}.%(ext)s`);
 
-    // disk guard (200MB)
+    // disk guard
     try {
       const free = getFreeDiskBytes(tmpDir);
-      if (free > -1 && free < 200 * 1024 * 1024) return res.status(507).json({ error: 'INSUFFICIENT_STORAGE' });
+      if (MIN_FREE_DISK_BYTES > 0 && free > -1 && free < MIN_FREE_DISK_BYTES) {
+        return res.status(507).json({ error: 'INSUFFICIENT_STORAGE' });
+      }
     } catch {}
 
     const hist = appendHistory({ title, url: sourceUrl, type: 'video', format: 'MP4', status: 'queued' });
-    const job: Job = { id: hist.id, type: 'video', tmpId, tmpDir, userId: (req.user?.id || 'anon'), concurrencyCap: policyFor(req.user?.plan).concurrentJobs };
+  const job: Job = { id: hist.id, type: 'video', tmpId, tmpDir, userId: requestUser.id, concurrencyCap: policyAtQueue.concurrentJobs, version: 1 };
     jobs.set(hist.id, job);
     emitProgress(hist.id, { progress: 0, stage: 'queued' });
 
     const run = () => {
-      log.info('job_spawn_best', `url=${sourceUrl}`);
-      const policy = policyFor(req.user?.plan);
+      log.info('job_spawn_best', `url=${sourceUrl} user=${requestUser.id}`);
+      const policy = policyAtQueue;
       const child = (ytdlp as any).exec(
         sourceUrl,
         {
@@ -1003,14 +1309,16 @@ app.post('/api/job/start/best', requireAuth as any, async (req: any, res: Respon
         { env: cleanedChildEnv(process.env) }
       );
       job.child = child as any;
+      trapChildPromise(child, 'yt_dlp_unhandled_job_best');
 
       const onProgress = (buf: Buffer) => {
-        const { pct, speed, eta } = parseDlLine(buf.toString());
+        const text = buf.toString();
+        const { pct, speed, eta } = parseDlLine(text);
         if (typeof pct === 'number') {
           updateHistoryThrottled(hist.id, pct);
           emitProgress(hist.id, { progress: pct, stage: 'downloading', speed, eta });
         }
-        if (/Merging formats|merging/i.test(buf.toString())) {
+        if (hasProgressHint(text, ['merging formats', 'merging'])) {
           emitProgress(hist.id, { progress: 95, stage: 'merging', speed, eta });
         }
       };
@@ -1033,9 +1341,7 @@ app.post('/api/job/start/best', requireAuth as any, async (req: any, res: Respon
               updateHistory(hist.id, { status: 'completed', progress: 100, size: `${Math.round(stat.size / 1024 / 1024)} MB` });
               clearHistoryThrottle(hist.id);
               emitProgress(hist.id, { progress: 100, stage: 'completed', size: stat.size });
-              const listeners = (sseListeners.get(hist.id) || new Set());
-              for (const r of listeners) { try { r.write(`event: end\n` + `data: ${JSON.stringify({ id: hist.id, status: 'completed' })}\n\n`); } catch {} }
-              try { sseListeners.delete(hist.id); } catch {}
+              finalizeJob(hist.id, 'completed', { job });
               succeeded = true;
             } else {
               updateHistory(hist.id, { status: 'failed' });
@@ -1047,9 +1353,7 @@ app.post('/api/job/start/best', requireAuth as any, async (req: any, res: Respon
           }
         } catch {}
         if (!succeeded) {
-          try { cleanupJobFiles(job); } catch {}
-          try { jobs.delete(hist.id); } catch {}
-          try { sseListeners.delete(hist.id); } catch {}
+          finalizeJob(hist.id, 'failed', { job, keepJob: false, keepFiles: false });
         }
         schedule();
       });
@@ -1066,9 +1370,20 @@ app.post('/api/job/start/best', requireAuth as any, async (req: any, res: Respon
 
 app.post('/api/job/start/audio', requireAuth as any, async (req: any, res: Response) => {
   try {
-    const { url: sourceUrl, title = 'audio', format = 'm4a' } = (req.body || {}) as { url?: string; title?: string; format?: string };
+    const { url: sourceUrl, title = 'audio', format = DEFAULT_AUDIO_FORMAT } = (req.body || {}) as { url?: string; title?: string; format?: string };
     if (!sourceUrl || !/^https?:\/\//i.test(sourceUrl) || !isUrlAllowed(sourceUrl, cfg)) return res.status(400).json({ error: 'invalid_url' });
     await assertPublicHttpHost(sourceUrl);
+
+    const fmt = coerceAudioFormat(format, DEFAULT_AUDIO_FORMAT);
+    if (!fmt) return res.status(400).json({ error: 'invalid_format' });
+
+    const requestUser = {
+      id: req.user?.id ?? 'anon',
+      username: req.user?.username,
+      plan: req.user?.plan ?? 'FREE',
+      planExpiresAt: req.user?.planExpiresAt ?? undefined,
+    } as const;
+    const policyAtQueue = policyFor(requestUser.plan);
 
     const tmpDir = os.tmpdir();
     const tmpId = randomUUID();
@@ -1076,22 +1391,24 @@ app.post('/api/job/start/audio', requireAuth as any, async (req: any, res: Respo
 
     try {
       const free = getFreeDiskBytes(tmpDir);
-      if (free > -1 && free < 200 * 1024 * 1024) return res.status(507).json({ error: 'INSUFFICIENT_STORAGE' });
+      if (MIN_FREE_DISK_BYTES > 0 && free > -1 && free < MIN_FREE_DISK_BYTES) {
+        return res.status(507).json({ error: 'INSUFFICIENT_STORAGE' });
+      }
     } catch {}
 
-    const hist = appendHistory({ title, url: sourceUrl, type: 'audio', format: String(format).toUpperCase(), status: 'queued' });
-    const job: Job = { id: hist.id, type: 'audio', tmpId, tmpDir, userId: (req.user?.id || 'anon'), concurrencyCap: policyFor(req.user?.plan).concurrentJobs };
+    const hist = appendHistory({ title, url: sourceUrl, type: 'audio', format: fmt.toUpperCase(), status: 'queued' });
+  const job: Job = { id: hist.id, type: 'audio', tmpId, tmpDir, userId: requestUser.id, concurrencyCap: policyAtQueue.concurrentJobs, version: 1 };
     jobs.set(hist.id, job);
     emitProgress(hist.id, { progress: 0, stage: 'queued' });
 
     const run = () => {
-      log.info('job_spawn_audio', `url=${sourceUrl} fmt=${String(format).toLowerCase()}`);
-      const policy2 = policyFor(req.user?.plan);
+      log.info('job_spawn_audio', `url=${sourceUrl} fmt=${fmt} user=${requestUser.id}`);
+      const policy = policyAtQueue;
       const child = (ytdlp as any).exec(
         sourceUrl,
         {
           extractAudio: true,
-          audioFormat: String(format).toLowerCase(),
+          audioFormat: fmt,
           output: outPath,
           addHeader: makeHeaders(sourceUrl),
           restrictFilenames: true,
@@ -1100,23 +1417,25 @@ app.post('/api/job/start/audio', requireAuth as any, async (req: any, res: Respo
           newline: true,
           ffmpegLocation: ffmpegBinary || undefined,
           proxy: PROXY_URL,
-          limitRate: chosenLimitRateK(policy2.speedLimitKbps),
+          limitRate: chosenLimitRateK(policy.speedLimitKbps),
           ...(cfg.maxFileSizeMb ? { maxFilesize: `${cfg.maxFileSizeMb}M` } : {}),
           ...(cfg.maxDurationSec ? { matchFilter: `duration <= ${cfg.maxDurationSec}` } : {}),
-          ...ytDlpArgsFromPolicy(policy2),
+          ...ytDlpArgsFromPolicy(policy),
           ...speedyDlArgs(),
         },
         { env: cleanedChildEnv(process.env) }
       );
       job.child = child as any;
+      trapChildPromise(child, 'yt_dlp_unhandled_job_audio');
 
       const onProgress = (buf: Buffer) => {
-        const { pct, speed, eta } = parseDlLine(buf.toString());
+        const text = buf.toString();
+        const { pct, speed, eta } = parseDlLine(text);
         if (typeof pct === 'number') {
           updateHistoryThrottled(hist.id, pct);
           emitProgress(hist.id, { progress: pct, stage: 'downloading', speed, eta });
         }
-        if (/ExtractAudio|Destination|\bconvert\b|merging/i.test(buf.toString())) {
+        if (hasProgressHint(text, ['extractaudio', 'destination', 'convert', 'merging'])) {
           emitProgress(hist.id, { progress: 90, stage: 'converting', speed, eta });
         }
       };
@@ -1131,7 +1450,7 @@ app.post('/api/job/start/audio', requireAuth as any, async (req: any, res: Respo
           const cur = readHistory().find((x) => x.id === hist.id);
           if (cur?.status === 'canceled') { schedule(); return; }
           if (code === 0) {
-            const produced = findProducedFile(tmpDir, tmpId, ['.mp3', '.m4a', '.aac', '.opus']);
+            const produced = findProducedFile(tmpDir, tmpId, ['.mp3', '.m4a', '.aac', '.opus', '.flac', '.wav', '.ogg', '.oga', '.alac']);
             if (produced) {
               job.produced = produced;
               const full = path.join(tmpDir, produced);
@@ -1139,9 +1458,7 @@ app.post('/api/job/start/audio', requireAuth as any, async (req: any, res: Respo
               updateHistory(hist.id, { status: 'completed', progress: 100, size: `${Math.round(stat.size / 1024 / 1024)} MB` });
               clearHistoryThrottle(hist.id);
               emitProgress(hist.id, { progress: 100, stage: 'completed', size: stat.size });
-              const listeners = (sseListeners.get(hist.id) || new Set());
-              for (const r of listeners) { try { r.write(`event: end\n` + `data: ${JSON.stringify({ id: hist.id, status: 'completed' })}\n\n`); } catch {} }
-              try { sseListeners.delete(hist.id); } catch {}
+              finalizeJob(hist.id, 'completed', { job });
               succeeded = true;
             } else {
               updateHistory(hist.id, { status: 'failed' });
@@ -1153,9 +1470,7 @@ app.post('/api/job/start/audio', requireAuth as any, async (req: any, res: Respo
           }
         } catch {}
         if (!succeeded) {
-          try { cleanupJobFiles(job); } catch {}
-          try { jobs.delete(hist.id); } catch {}
-          try { sseListeners.delete(hist.id); } catch {}
+          finalizeJob(hist.id, 'failed', { job, keepJob: false, keepFiles: false });
         }
         schedule();
       });
@@ -1179,6 +1494,14 @@ app.post('/api/job/start/clip', requireAuth as any, async (req: any, res: Respon
     const s = Number(start), e = Number(end);
     if (!Number.isFinite(s) || !Number.isFinite(e) || !(e > s)) return res.status(400).json({ error: 'invalid_range' });
 
+    const requestUser = {
+      id: req.user?.id ?? 'anon',
+      username: req.user?.username,
+      plan: req.user?.plan ?? 'FREE',
+      planExpiresAt: req.user?.planExpiresAt ?? undefined,
+    } as const;
+    const policyAtQueue = policyFor(requestUser.plan);
+
     const section = `${Math.max(0, Math.floor(s))}-${Math.floor(e)}`;
     const tmpDir = os.tmpdir();
     const tmpId = randomUUID();
@@ -1186,17 +1509,19 @@ app.post('/api/job/start/clip', requireAuth as any, async (req: any, res: Respon
 
     try {
       const free = getFreeDiskBytes(tmpDir);
-      if (free > -1 && free < 200 * 1024 * 1024) return res.status(507).json({ error: 'INSUFFICIENT_STORAGE' });
+      if (MIN_FREE_DISK_BYTES > 0 && free > -1 && free < MIN_FREE_DISK_BYTES) {
+        return res.status(507).json({ error: 'INSUFFICIENT_STORAGE' });
+      }
     } catch {}
 
     const hist = appendHistory({ title, url: sourceUrl, type: 'video', format: 'MP4', status: 'queued' });
-    const job: Job = { id: hist.id, type: 'video', tmpId, tmpDir, userId: (req.user?.id || 'anon'), concurrencyCap: policyFor(req.user?.plan).concurrentJobs };
+  const job: Job = { id: hist.id, type: 'video', tmpId, tmpDir, userId: requestUser.id, concurrencyCap: policyAtQueue.concurrentJobs, version: 1 };
     jobs.set(hist.id, job);
     emitProgress(hist.id, { progress: 0, stage: 'queued' });
 
     const run = () => {
-      log.info('job_spawn_clip', `url=${sourceUrl} ${section}`);
-      const policy = policyFor(req.user?.plan);
+      log.info('job_spawn_clip', `url=${sourceUrl} ${section} user=${requestUser.id}`);
+      const policy = policyAtQueue;
       const child = (ytdlp as any).exec(sourceUrl, {
         format: `bv*[height<=?${policy.maxHeight}]+ba/b[height<=?${policy.maxHeight}]`,
         mergeOutputFormat: 'mp4',
@@ -1215,6 +1540,7 @@ app.post('/api/job/start/clip', requireAuth as any, async (req: any, res: Respon
         ...speedyDlArgs(),
       });
       job.child = child as any;
+      trapChildPromise(child, 'yt_dlp_unhandled_job_clip');
 
       const onProgress = (buf: Buffer) => {
         const { pct, speed, eta } = parseDlLine(buf.toString());
@@ -1237,17 +1563,13 @@ app.post('/api/job/start/clip', requireAuth as any, async (req: any, res: Respon
               updateHistory(hist.id, { status: 'completed', progress: 100, size: `${Math.round(stat.size / 1024 / 1024)} MB` });
               clearHistoryThrottle(hist.id);
               emitProgress(hist.id, { progress: 100, stage: 'completed', size: stat.size });
-              const listeners = (sseListeners.get(hist.id) || new Set());
-              for (const r of listeners) { try { r.write(`event: end\n` + `data: ${JSON.stringify({ id: hist.id, status: 'completed' })}\n\n`); } catch {} }
-              try { sseListeners.delete(hist.id); } catch {}
+              finalizeJob(hist.id, 'completed', { job });
               succeeded = true;
             } else { updateHistory(hist.id, { status: 'failed' }); clearHistoryThrottle(hist.id); }
           } else { updateHistory(hist.id, { status: 'failed' }); clearHistoryThrottle(hist.id); }
         } catch {}
         if (!succeeded) {
-          try { cleanupJobFiles(job); } catch {}
-          try { jobs.delete(hist.id); } catch {}
-          try { sseListeners.delete(hist.id); } catch {}
+          finalizeJob(hist.id, 'failed', { job, keepJob: false, keepFiles: false });
         }
         schedule();
       });
@@ -1271,6 +1593,14 @@ app.post('/api/job/start/embed-subs', requireAuth as any, async (req: any, res: 
     await assertPublicHttpHost(sourceUrl);
     if (!lang) return res.status(400).json({ error: 'missing_lang' });
 
+    const requestUser = {
+      id: req.user?.id ?? 'anon',
+      username: req.user?.username,
+      plan: req.user?.plan ?? 'FREE',
+      planExpiresAt: req.user?.planExpiresAt ?? undefined,
+    } as const;
+    const policyAtQueue = policyFor(requestUser.plan);
+
     const fmt = /^(srt|vtt)$/i.test(String(format)) ? String(format).toLowerCase() : 'srt';
     const cont = /^(mp4|mkv|webm)$/i.test(String(container)) ? String(container).toLowerCase() : 'mp4';
 
@@ -1280,17 +1610,19 @@ app.post('/api/job/start/embed-subs', requireAuth as any, async (req: any, res: 
 
     try {
       const free = getFreeDiskBytes(tmpDir);
-      if (free > -1 && free < 200 * 1024 * 1024) return res.status(507).json({ error: 'INSUFFICIENT_STORAGE' });
+      if (MIN_FREE_DISK_BYTES > 0 && free > -1 && free < MIN_FREE_DISK_BYTES) {
+        return res.status(507).json({ error: 'INSUFFICIENT_STORAGE' });
+      }
     } catch {}
 
     const hist = appendHistory({ title, url: sourceUrl, type: 'video', format: cont.toUpperCase(), status: 'queued' });
-    const job: Job = { id: hist.id, type: 'video', tmpId, tmpDir, userId: (req.user?.id || 'anon'), concurrencyCap: policyFor(req.user?.plan).concurrentJobs };
+  const job: Job = { id: hist.id, type: 'video', tmpId, tmpDir, userId: requestUser.id, concurrencyCap: policyAtQueue.concurrentJobs, version: 1 };
     jobs.set(hist.id, job);
     emitProgress(hist.id, { progress: 0, stage: 'queued' });
 
     const run = () => {
-      log.info('job_spawn_embed_subs', `url=${sourceUrl} lang=${lang} fmt=${fmt} cont=${cont}`);
-      const policy = policyFor(req.user?.plan);
+      log.info('job_spawn_embed_subs', `url=${sourceUrl} lang=${lang} fmt=${fmt} cont=${cont} user=${requestUser.id}`);
+      const policy = policyAtQueue;
       const child = (ytdlp as any).exec(sourceUrl, {
         format: 'bv*+ba/b',
         mergeOutputFormat: cont,
@@ -1313,11 +1645,16 @@ app.post('/api/job/start/embed-subs', requireAuth as any, async (req: any, res: 
         ...speedyDlArgs(),
       });
       job.child = child as any;
+      trapChildPromise(child, 'yt_dlp_unhandled_job_embed_subs');
 
       const onProgress = (buf: Buffer) => {
-        const { pct, speed, eta } = parseDlLine(buf.toString());
-        if (typeof pct === 'number') { updateHistoryThrottled(hist.id, pct); emitProgress(hist.id, { progress: pct, stage: 'downloading', speed, eta }); }
-        if (/Writing video subtitles|Merging formats|merging|Embedding subtitles/i.test(buf.toString())) {
+        const text = buf.toString();
+        const { pct, speed, eta } = parseDlLine(text);
+        if (typeof pct === 'number') {
+          updateHistoryThrottled(hist.id, pct);
+          emitProgress(hist.id, { progress: pct, stage: 'downloading', speed, eta });
+        }
+        if (hasProgressHint(text, ['writing video subtitles', 'merging formats', 'merging', 'embedding subtitles'])) {
           emitProgress(hist.id, { progress: 95, stage: 'embedding', speed, eta });
         }
       };
@@ -1338,17 +1675,13 @@ app.post('/api/job/start/embed-subs', requireAuth as any, async (req: any, res: 
               updateHistory(hist.id, { status: 'completed', progress: 100, size: `${Math.round(stat.size / 1024 / 1024)} MB` });
               clearHistoryThrottle(hist.id);
               emitProgress(hist.id, { progress: 100, stage: 'completed', size: stat.size });
-              const listeners = (sseListeners.get(hist.id) || new Set());
-              for (const r of listeners) { try { r.write(`event: end\n` + `data: ${JSON.stringify({ id: hist.id, status: 'completed' })}\n\n`); } catch {} }
-              try { sseListeners.delete(hist.id); } catch {}
+              finalizeJob(hist.id, 'completed', { job });
               succeeded = true;
             } else { updateHistory(hist.id, { status: 'failed' }); clearHistoryThrottle(hist.id); }
           } else { updateHistory(hist.id, { status: 'failed' }); clearHistoryThrottle(hist.id); }
         } catch {}
         if (!succeeded) {
-          try { cleanupJobFiles(job); } catch {}
-          try { jobs.delete(hist.id); } catch {}
-          try { sseListeners.delete(hist.id); } catch {}
+          finalizeJob(hist.id, 'failed', { job, keepJob: false, keepFiles: false });
         }
         schedule();
       });
@@ -1370,6 +1703,14 @@ app.post('/api/job/start/convert', requireAuth as any, async (req: any, res: Res
     if (!sourceUrl || !/^https?:\/\//i.test(sourceUrl) || !isUrlAllowed(sourceUrl, cfg)) return res.status(400).json({ error: 'invalid_url' });
     await assertPublicHttpHost(sourceUrl);
 
+    const requestUser = {
+      id: req.user?.id ?? 'anon',
+      username: req.user?.username,
+      plan: req.user?.plan ?? 'FREE',
+      planExpiresAt: req.user?.planExpiresAt ?? undefined,
+    } as const;
+    const policyAtQueue = policyFor(requestUser.plan);
+
     const fmt = String(container).toLowerCase();
     const valid = ['mp4', 'mkv', 'webm'];
     const mergeOut: any = valid.includes(fmt) ? fmt : 'mp4';
@@ -1380,17 +1721,19 @@ app.post('/api/job/start/convert', requireAuth as any, async (req: any, res: Res
 
     try {
       const free = getFreeDiskBytes(tmpDir);
-      if (free > -1 && free < 200 * 1024 * 1024) return res.status(507).json({ error: 'INSUFFICIENT_STORAGE' });
+      if (MIN_FREE_DISK_BYTES > 0 && free > -1 && free < MIN_FREE_DISK_BYTES) {
+        return res.status(507).json({ error: 'INSUFFICIENT_STORAGE' });
+      }
     } catch {}
 
     const hist = appendHistory({ title, url: sourceUrl, type: 'video', format: String(mergeOut).toUpperCase(), status: 'queued' });
-    const job: Job = { id: hist.id, type: 'video', tmpId, tmpDir, userId: (req.user?.id || 'anon'), concurrencyCap: policyFor(req.user?.plan).concurrentJobs };
+  const job: Job = { id: hist.id, type: 'video', tmpId, tmpDir, userId: requestUser.id, concurrencyCap: policyAtQueue.concurrentJobs, version: 1 };
     jobs.set(hist.id, job);
     emitProgress(hist.id, { progress: 0, stage: 'queued' });
 
     const run = () => {
-      log.info('job_spawn_convert', `url=${sourceUrl} container=${mergeOut}`);
-      const policy = policyFor(req.user?.plan);
+      log.info('job_spawn_convert', `url=${sourceUrl} container=${mergeOut} user=${requestUser.id}`);
+      const policy = policyAtQueue;
       const child = (ytdlp as any).exec(
         sourceUrl,
         {
@@ -1412,11 +1755,18 @@ app.post('/api/job/start/convert', requireAuth as any, async (req: any, res: Res
         }
       );
       job.child = child as any;
+      trapChildPromise(child, 'yt_dlp_unhandled_job_convert');
 
       const onProgress = (buf: Buffer) => {
-        const { pct, speed, eta } = parseDlLine(buf.toString());
-        if (typeof pct === 'number') { updateHistoryThrottled(hist.id, pct); emitProgress(hist.id, { progress: pct, stage: 'downloading', speed, eta }); }
-        if (/Merging formats|merging/i.test(buf.toString())) emitProgress(hist.id, { progress: 95, stage: 'merging', speed, eta });
+        const text = buf.toString();
+        const { pct, speed, eta } = parseDlLine(text);
+        if (typeof pct === 'number') {
+          updateHistoryThrottled(hist.id, pct);
+          emitProgress(hist.id, { progress: pct, stage: 'downloading', speed, eta });
+        }
+        if (hasProgressHint(text, ['merging formats', 'merging'])) {
+          emitProgress(hist.id, { progress: 95, stage: 'merging', speed, eta });
+        }
       };
       child.stdout?.on('data', onProgress);
       child.stderr?.on('data', onProgress);
@@ -1437,9 +1787,7 @@ app.post('/api/job/start/convert', requireAuth as any, async (req: any, res: Res
               updateHistory(hist.id, { status: 'completed', progress: 100, size: `${Math.round(stat.size / 1024 / 1024)} MB` });
               clearHistoryThrottle(hist.id);
               emitProgress(hist.id, { progress: 100, stage: 'completed', size: stat.size });
-              const listeners = (sseListeners.get(hist.id) || new Set());
-              for (const r of listeners) { try { r.write(`event: end\n` + `data: ${JSON.stringify({ id: hist.id, status: 'completed' })}\n\n`); } catch {} }
-              try { sseListeners.delete(hist.id); } catch {}
+              finalizeJob(hist.id, 'completed', { job });
               succeeded = true;
             } else {
               updateHistory(hist.id, { status: 'failed' });
@@ -1451,9 +1799,7 @@ app.post('/api/job/start/convert', requireAuth as any, async (req: any, res: Res
           }
         } catch {}
         if (!succeeded) {
-          try { cleanupJobFiles(job); } catch {}
-          try { jobs.delete(hist.id); } catch {}
-          try { sseListeners.delete(hist.id); } catch {}
+          finalizeJob(hist.id, 'failed', { job, keepJob: false, keepFiles: false });
         }
         schedule();
       });
@@ -1473,10 +1819,16 @@ app.post('/api/job/start/convert', requireAuth as any, async (req: any, res: Res
 // ========================
 app.post('/api/batch', requireAuth as any, async (req: any, res) => {
   try {
-    const { urls, mode = 'video', audioFormat = 'm4a', titleTemplate } =
+    const { urls, mode = 'video', audioFormat = DEFAULT_AUDIO_FORMAT, titleTemplate } =
       (req.body || {}) as { urls?: string[]; mode?: 'video'|'audio'; audioFormat?: string; titleTemplate?: string };
     if (!Array.isArray(urls) || !urls.length) return res.status(400).json({ error: 'missing_urls' });
-    const policy = policyFor(req.user?.plan);
+    const requestUser = {
+      id: req.user?.id ?? 'anon',
+      username: req.user?.username,
+      plan: req.user?.plan ?? 'FREE',
+      planExpiresAt: req.user?.planExpiresAt ?? undefined,
+    } as const;
+    const policy = policyFor(requestUser.plan);
     const normalized = Array.from(new Set(urls.map(u => String(u || '').trim()).filter(u => /^https?:\/\//i.test(u))));
     const unique: string[] = [];
     for (const u of normalized) {
@@ -1487,8 +1839,15 @@ app.post('/api/batch', requireAuth as any, async (req: any, res) => {
     if (!unique.length) return res.status(400).json({ error: 'no_valid_urls' });
     if (unique.length > policy.batchMax) return res.status(400).json({ error: 'BATCH_LIMIT_EXCEEDED', limit: policy.batchMax });
 
+    let audioFmt: string | undefined;
+    if (mode === 'audio') {
+      const resolved = coerceAudioFormat(audioFormat, DEFAULT_AUDIO_FORMAT);
+      if (!resolved) return res.status(400).json({ error: 'invalid_format' });
+      audioFmt = resolved;
+    }
+
     const batchId = randomUUID();
-    const batch: Batch = { id: batchId, userId: req.user?.id, createdAt: Date.now(), mode, format: mode === 'audio' ? audioFormat : undefined, items: [] };
+    const batch: Batch = { id: batchId, userId: requestUser.id, createdAt: Date.now(), mode, format: mode === 'audio' ? audioFmt : undefined, items: [] };
     batches.set(batchId, batch);
 
     for (const u of unique) {
@@ -1496,13 +1855,13 @@ app.post('/api/batch', requireAuth as any, async (req: any, res) => {
       const tmpDir = os.tmpdir();
       const tmpId = randomUUID();
       const outPath = path.join(fs.realpathSync(tmpDir), `${tmpId}.%(ext)s`);
-      const hist = appendHistory({ title, url: u, type: mode, format: mode === 'audio' ? String(audioFormat).toUpperCase() : 'MP4', status: 'queued' });
-      const job: Job = { id: hist.id, type: mode, tmpId, tmpDir, userId: (req.user?.id || 'anon'), concurrencyCap: policy.concurrentJobs };
+    const hist = appendHistory({ title, url: u, type: mode, format: mode === 'audio' ? String(audioFmt).toUpperCase() : 'MP4', status: 'queued' });
+  const job: Job = { id: hist.id, type: mode, tmpId, tmpDir, userId: requestUser.id, concurrencyCap: policy.concurrentJobs, version: 1 };
       jobs.set(hist.id, job);
       batch.items.push({ url: u, jobId: hist.id });
       emitProgress(hist.id, { progress: 0, stage: 'queued', batchId });
       const run = () => {
-        const policyCur = policyFor(req.user?.plan);
+        const policyCur = policy;
         const commonArgs: any = {
           output: outPath,
           addHeader: makeHeaders(u),
@@ -1520,10 +1879,10 @@ app.post('/api/batch', requireAuth as any, async (req: any, res) => {
         };
 
         let child: any;
-        if (mode === 'audio') {
+        if (mode === 'audio' && audioFmt) {
           child = (ytdlp as any).exec(
             u,
-            { extractAudio: true, audioFormat: String(audioFormat).toLowerCase(), ...commonArgs },
+            { extractAudio: true, audioFormat: audioFmt, ...commonArgs },
             { env: cleanedChildEnv(process.env) }
           );
         } else {
@@ -1532,18 +1891,19 @@ app.post('/api/batch', requireAuth as any, async (req: any, res) => {
             { format: `bv*[height<=?${policyCur.maxHeight}]+ba/b[height<=?${policyCur.maxHeight}]`, mergeOutputFormat: 'mp4', ...commonArgs },
             { env: cleanedChildEnv(process.env) }
           );
-        }
+    }
 
-        job.child = child;
+    job.child = child as any;
+    trapChildPromise(child, mode === 'audio' ? 'yt_dlp_unhandled_batch_audio' : 'yt_dlp_unhandled_batch_video');
 
-        const onProgress = (buf: Buffer) => {
+    const onProgress = (buf: Buffer) => {
           const text = buf.toString();
           const { pct, speed, eta } = parseDlLine(text);
           if (typeof pct === 'number') {
             updateHistoryThrottled(hist.id, pct);
             emitProgress(hist.id, { progress: pct, stage: 'downloading', speed, eta, batchId });
           }
-          if (/Merging formats|merging|ExtractAudio|convert|Destination|Embedding subtitles/i.test(text)) {
+          if (hasProgressHint(text, ['merging formats', 'merging', 'extractaudio', 'convert', 'destination', 'embedding subtitles'])) {
             emitProgress(hist.id, { stage: mode === 'audio' ? 'converting' : 'processing', batchId });
           }
         };
@@ -1555,7 +1915,7 @@ app.post('/api/batch', requireAuth as any, async (req: any, res) => {
           let succeeded = false;
           try {
             const produced = findProducedFile(tmpDir, tmpId, mode === 'audio'
-              ? ['.mp3', '.m4a', '.aac', '.opus']
+              ? ['.mp3', '.m4a', '.aac', '.opus', '.flac', '.wav', '.ogg', '.oga', '.alac']
               : ['.mp4', '.mkv', '.webm']);
             if (code === 0 && produced) {
               job.produced = produced;
@@ -1564,9 +1924,7 @@ app.post('/api/batch', requireAuth as any, async (req: any, res) => {
               updateHistory(hist.id, { status: 'completed', progress: 100, size: `${sizeMb} MB` });
               clearHistoryThrottle(hist.id);
               emitProgress(hist.id, { progress: 100, stage: 'completed', batchId });
-              const listeners = (sseListeners.get(hist.id) || new Set());
-              for (const r of listeners) { try { r.write(`event: end\ndata: ${JSON.stringify({ id: hist.id, status: 'completed', batchId })}\n\n`); } catch {} }
-              try { sseListeners.delete(hist.id); } catch {}
+              finalizeJob(hist.id, 'completed', { job, extra: { batchId } });
               succeeded = true;
             } else {
               updateHistory(hist.id, { status: 'failed' });
@@ -1575,9 +1933,7 @@ app.post('/api/batch', requireAuth as any, async (req: any, res) => {
             }
           } catch {}
           if (!succeeded) {
-            try { cleanupJobFiles(job); } catch {}
-            try { jobs.delete(hist.id); } catch {}
-            try { sseListeners.delete(hist.id); } catch {}
+            finalizeJob(hist.id, 'failed', { job, keepJob: false, keepFiles: false, extra: { batchId } });
           }
           schedule();
         });
@@ -1614,16 +1970,14 @@ app.post('/api/batch/:id/cancel', requireAuth as any, (req: any, res) => {
     if (idx >= 0) {
       waiting.splice(idx, 1);
       updateHistory(it.jobId, { status: 'canceled' });
-      clearHistoryThrottle(it.jobId);
       emitProgress(it.jobId, { stage: 'canceled', batchId: b.id });
-      try { cleanupJobFiles(job); jobs.delete(it.jobId); } catch {}
+      finalizeJob(it.jobId, 'canceled', { job, keepJob: false, keepFiles: false, extra: { batchId: b.id } });
       continue;
     }
     try { job.child?.kill('SIGTERM'); } catch {}
     updateHistory(it.jobId, { status: 'canceled' });
-    clearHistoryThrottle(it.jobId);
     emitProgress(it.jobId, { stage: 'canceled', batchId: b.id });
-    try { running.delete(it.jobId); } catch {}
+    finalizeJob(it.jobId, 'canceled', { job, keepJob: false, keepFiles: false, extra: { batchId: b.id } });
   }
   b.finishedAt = Date.now();
   return res.json({ ok: true });
@@ -1632,13 +1986,16 @@ app.post('/api/batch/:id/cancel', requireAuth as any, (req: any, res) => {
 // ========================
 // SSE progress (per history id)
 // ========================
-app.get('/api/progress/:id', requireAuth as any, (req, res) => {
+app.get('/api/progress/:id', requireAuthOrSigned('progress'), progressBucket, (req: any, res) => {
   const id = req.params.id;
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-store');
   res.setHeader('X-Accel-Buffering', 'no');
   res.setHeader('Connection', 'keep-alive');
+  appendVary(res, 'Authorization');
   (res as any).flushHeaders?.();
+
+  res.write(`retry: 5000\n`);
 
   addSseListener(id, res);
 
@@ -1646,19 +2003,38 @@ app.get('/api/progress/:id', requireAuth as any, (req, res) => {
   let hb: NodeJS.Timeout | undefined;
   let timeout: NodeJS.Timeout | undefined;
 
+  const cleanup = () => {
+    if (closed) return;
+    closed = true;
+    if (hb) {
+      clearInterval(hb);
+      hb = undefined;
+    }
+    if (timeout) {
+      clearTimeout(timeout);
+      timeout = undefined;
+    }
+    removeSseListener(id, res);
+    try { res.end(); } catch {}
+  };
+
   const safeWrite = (chunk: string) => {
     if (closed || res.writableEnded || (res as any).destroyed) return;
     try { res.write(chunk); } catch { cleanup(); }
   };
 
-  const cleanup = () => {
-    if (closed) return;
-    closed = true;
-    if (hb) clearInterval(hb);
-    if (timeout) clearTimeout(timeout);
-    removeSseListener(id, res);
-    try { res.end(); } catch {}
-  };
+  const lastEventHeader = req.header('Last-Event-ID');
+  const lastEventId = lastEventHeader && !Number.isNaN(Number(lastEventHeader)) ? Number(lastEventHeader) : undefined;
+  if (typeof lastEventId === 'number') {
+    const buf = sseBuffers.get(id) || [];
+    for (const frame of buf) {
+      const match = frame.match(/^id:\s*(\d+)/m);
+      const frameId = match ? Number(match[1]) : undefined;
+      if (typeof frameId === 'number' && frameId > lastEventId) {
+        safeWrite(frame);
+      }
+    }
+  }
 
   const onErr = (err: any) => {
     const msg = String(err?.message || err || '');
@@ -1677,7 +2053,10 @@ app.get('/api/progress/:id', requireAuth as any, (req, res) => {
 
   safeWrite(`event: ping\ndata: {"ok":true}\n\n`);
   hb = setInterval(() => safeWrite(`event: ping\ndata: {"ts":${Date.now()}}\n\n`), 15000);
-  timeout = setTimeout(() => { safeWrite(`event: end\ndata: {"status":"timeout"}\n\n`); cleanup(); }, 10 * 60 * 1000);
+  timeout = setTimeout(() => {
+    pushSse(id, { id, status: 'timeout' }, 'end');
+    cleanup();
+  }, 10 * 60 * 1000);
 });
 
 // ========================
@@ -1692,12 +2071,8 @@ app.post('/api/job/cancel/:id', requireAuth as any, (req, res) => {
   if (idx >= 0) {
     waiting.splice(idx, 1);
     updateHistory(id, { status: 'canceled' });
-    clearHistoryThrottle(id);
     emitProgress(id, { stage: 'canceled' });
-    const listeners = (sseListeners.get(id) || new Set());
-    for (const r of listeners) { try { r.write(`event: end\ndata: ${JSON.stringify({ id, status: 'canceled' })}\n\n`); } catch {} }
-    try { cleanupJobFiles(job); jobs.delete(id); } catch {}
-    try { sseListeners.delete(id); } catch {}
+    finalizeJob(id, 'canceled', { job, keepJob: false, keepFiles: false });
     return res.json({ ok: true });
   }
 
@@ -1706,13 +2081,8 @@ app.post('/api/job/cancel/:id', requireAuth as any, (req, res) => {
     const pid = job.child?.pid;
     if (pid && !job.child?.killed) setTimeout(() => { try { process.kill(pid, 'SIGKILL'); } catch {} }, 5000);
     updateHistory(id, { status: 'canceled' });
-    clearHistoryThrottle(id);
     emitProgress(id, { stage: 'canceled' });
-    const listeners = (sseListeners.get(id) || new Set());
-    for (const r of listeners) { try { r.write(`event: end\ndata: ${JSON.stringify({ id, status: 'canceled' })}\n\n`); } catch {} }
-    try { cleanupJobFiles(job); jobs.delete(id); } catch {}
-    try { running.delete(id); } catch {}
-    try { sseListeners.delete(id); } catch {}
+    finalizeJob(id, 'canceled', { job, keepJob: false, keepFiles: false });
   } catch {}
   return res.json({ ok: true });
 });
@@ -1723,13 +2093,8 @@ app.post('/api/jobs/cancel-all', requireAuth as any, (_req, res) => {
     const next = waiting.shift()!;
     const id = next.job.id;
     updateHistory(id, { status: 'canceled' });
-    clearHistoryThrottle(id);
     emitProgress(id, { stage: 'canceled' });
-    const listeners = (sseListeners.get(id) || new Set());
-    for (const r of listeners) { try { r.write(`event: end\ndata: ${JSON.stringify({ id, status: 'canceled' })}\n\n`); } catch {} }
-    try { cleanupJobFiles(next.job); } catch {}
-    try { jobs.delete(id); } catch {}
-    try { sseListeners.delete(id); } catch {}
+    finalizeJob(id, 'canceled', { job: next.job, keepJob: false, keepFiles: false });
   }
   // running
   for (const id of Array.from(running)) {
@@ -1739,17 +2104,9 @@ app.post('/api/jobs/cancel-all', requireAuth as any, (_req, res) => {
       const pid = job?.child?.pid;
       if (pid && !job?.child?.killed) setTimeout(() => { try { process.kill(pid, 'SIGKILL'); } catch {} }, 5000);
     } catch {}
-    try { running.delete(id); } catch {}
     updateHistory(id, { status: 'canceled' });
-    clearHistoryThrottle(id);
     emitProgress(id, { stage: 'canceled' });
-    const listeners = (sseListeners.get(id) || new Set());
-    for (const r of listeners) { try { r.write(`event: end\ndata: ${JSON.stringify({ id, status: 'canceled' })}\n\n`); } catch {} }
-    if (job) {
-      try { cleanupJobFiles(job); } catch {}
-      try { jobs.delete(id); } catch {}
-    }
-    try { sseListeners.delete(id); } catch {}
+    finalizeJob(id, 'canceled', { job: job, keepJob: false, keepFiles: false });
   }
   res.json({ ok: true });
 });
@@ -1757,7 +2114,41 @@ app.post('/api/jobs/cancel-all', requireAuth as any, (_req, res) => {
 // ========================
 // Job file download (range + cleanup)
 // ========================
-app.get('/api/job/file/:id', requireAuth as any, (req, res) => {
+app.post('/api/job/file/:id/sign', requireAuth as any, signBucket, (req, res) => {
+  const id = req.params.id;
+  const job = jobs.get(id);
+  if (!job || !job.produced) {
+    return res.status(404).json({ error: 'not_found' });
+  }
+
+  const requested = Number((req.body as any)?.expiresIn ?? 0);
+  const ttl = Number.isFinite(requested) && requested > 0 ? Math.min(Math.floor(requested), 3600) : 1800;
+  const scope = 'download' as const;
+  const token = signToken({ sub: `job:${id}`, scope, ver: job.version }, ttl);
+  signIssued.inc({ scope });
+  signTtl.observe(ttl);
+  res.setHeader('Cache-Control', 'no-store');
+  return res.json({ token, expiresAt: Date.now() + ttl * 1000, queryParam: 's' });
+});
+
+app.post('/api/progress/:id/sign', requireAuth as any, signBucket, (req, res) => {
+  const id = req.params.id;
+  const job = jobs.get(id);
+  if (!job) {
+    return res.status(404).json({ error: 'not_found' });
+  }
+
+  const requested = Number((req.body as any)?.expiresIn ?? 0);
+  const ttl = Number.isFinite(requested) && requested > 0 ? Math.min(Math.floor(requested), 3600) : 600;
+  const scope = 'progress' as const;
+  const token = signToken({ sub: `job:${id}`, scope, ver: job.version }, ttl);
+  signIssued.inc({ scope });
+  signTtl.observe(ttl);
+  res.setHeader('Cache-Control', 'no-store');
+  return res.json({ token, expiresAt: Date.now() + ttl * 1000, queryParam: 's' });
+});
+
+app.get('/api/job/file/:id', requireAuthOrSigned('download'), jobBucket, (req: any, res) => {
   const id = req.params.id;
   const job = jobs.get(id);
   if (!job || !job.produced) return res.status(404).json({ error: 'not_found' });
@@ -1766,15 +2157,40 @@ app.get('/api/job/file/:id', requireAuth as any, (req, res) => {
 
   try {
     const stat = fs.statSync(full);
-    const isAudio = /\.(mp3|m4a|aac|opus)$/i.test(full);
+    appendVary(res, 'Authorization');
     const ext = path.extname(full).toLowerCase();
+    const audioExts = new Set(['.mp3', '.m4a', '.aac', '.opus', '.flac', '.wav', '.ogg', '.oga', '.alac']);
+    const isAudio = audioExts.has(ext);
     const videoType = ext === '.mkv' ? 'video/x-matroska' : ext === '.webm' ? 'video/webm' : 'video/mp4';
-    res.setHeader('Content-Type', isAudio ? (/(mp3)$/i.test(full) ? 'audio/mpeg' : 'audio/mp4') : videoType);
+    const audioType =
+      ext === '.mp3' ? 'audio/mpeg'
+      : ext === '.opus' ? 'audio/opus'
+      : ext === '.ogg' || ext === '.oga' ? 'audio/ogg'
+      : ext === '.flac' ? 'audio/flac'
+      : ext === '.wav' ? 'audio/wav'
+      : 'audio/mp4';
+    res.setHeader('Content-Type', isAudio ? audioType : videoType);
+
+    const etag = `W/"${stat.size.toString(16)}-${Math.floor(stat.mtimeMs).toString(16)}"`;
+    res.setHeader('ETag', etag);
+    res.setHeader('Last-Modified', stat.mtime.toUTCString());
 
     const h = readHistory().find((x) => x.id === id);
     const base = (h?.title || (job.type === 'audio' ? 'audio' : 'video')).replace(/[^\w.-]+/g, '_');
     const extName = path.extname(full).replace(/^\./, '') || (job.type === 'audio' ? 'm4a' : 'mp4');
     res.setHeader('Content-Disposition', `attachment; filename="${base}.${extName}"`);
+    res.setHeader('Cache-Control', 'no-store');
+    res.setHeader('Accept-Ranges', 'bytes');
+
+    const ifNoneMatch = req.headers['if-none-match'];
+    if (ifNoneMatch) {
+      const tags = String(ifNoneMatch).split(',').map((t) => t.trim());
+      const matches = tags.some((t) => t === etag || t === '*');
+      if (matches) {
+        res.status(304);
+        return res.end();
+      }
+    }
 
     const range = req.headers.range;
     if (range) {
@@ -1784,7 +2200,6 @@ app.get('/api/job/file/:id', requireAuth as any, (req, res) => {
         const end = m[2] ? parseInt(m[2], 10) : (stat.size - 1);
         if (Number.isFinite(start) && start >= 0 && start < stat.size && end >= start) {
           res.status(206);
-          res.setHeader('Accept-Ranges', 'bytes');
           res.setHeader('Content-Range', `bytes ${start}-${end}/${stat.size}`);
           res.setHeader('Content-Length', String(end - start + 1));
           const stream = fs.createReadStream(full, { start, end });
@@ -1794,6 +2209,10 @@ app.get('/api/job/file/:id', requireAuth as any, (req, res) => {
           return;
         }
       }
+
+      res.status(416);
+      res.setHeader('Content-Range', `bytes */${stat.size}`);
+      return res.end();
     }
 
     res.setHeader('Content-Length', String(stat.size));
@@ -1805,10 +2224,7 @@ app.get('/api/job/file/:id', requireAuth as any, (req, res) => {
     stream.pipe(res);
     stream.on('close', () => {
       try { fs.unlink(full, () => {}); } catch {}
-      try { cleanupJobFiles(job); } catch {}
-      try { jobs.delete(id); } catch {}
-      try { clearHistoryThrottle(id); } catch {}
-      try { sseListeners.delete(id); } catch {}
+      finalizeJob(id, 'completed', { job, keepJob: false, keepFiles: false });
     });
   } catch (err: any) {
     log.error('job_file_failed', err?.message || err);
@@ -1927,25 +2343,31 @@ app.use(errorHandler);
 // ========================
 // Start server (retry on EADDRINUSE)
 // ========================
-function startServerWithRetry(startPort: number, maxAttempts = 10): Promise<import('http').Server> {
-  let port = startPort;
+function startServerWithRetry(port: number, maxAttempts = 40): Promise<import('http').Server> {
   let attempts = 0;
   return new Promise((resolve, reject) => {
     const tryListen = () => {
-      attempts++;
+      attempts += 1;
       const server = app.listen(port);
+      server.keepAliveTimeout = 120_000;
+      server.headersTimeout = 125_000;
+      server.requestTimeout = 0;
       const onError = (err: any) => {
         server.off('listening', onListening);
         if (err && err.code === 'EADDRINUSE') {
-          if (attempts >= maxAttempts) return reject(new Error(`Ports ${startPort}-${port} busy`));
-          try { log.warn('port_in_use_retry', `Port ${port} busy, retrying on ${port + 1}...`); } catch {}
-          try { server.close(); } catch {}
-          port += 1;
-          setTimeout(tryListen, 150);
-        } else {
-          try { log.error('server_error', err?.message || String(err)); } catch {}
-          reject(err);
+          try { server.close(() => {}); } catch {}
+          if (attempts >= maxAttempts) {
+            const message = `Port ${port} busy after ${maxAttempts} attempts`;
+            try { log.error('port_in_use_exhausted', message); } catch {}
+            return reject(new Error(message));
+          }
+          const delay = Math.min(1_500, 150 * attempts);
+          try { log.warn('port_in_use_retry', `Port ${port} busy, retrying in ${delay}ms (attempt ${attempts}/${maxAttempts})...`); } catch {}
+          setTimeout(tryListen, delay);
+          return;
         }
+        try { log.error('server_error', err?.message || String(err)); } catch {}
+        reject(err);
       };
       const onListening = () => {
         server.off('error', onError);

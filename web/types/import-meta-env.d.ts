@@ -1,7 +1,2 @@
-interface ImportMetaEnv {
-  readonly VITE_API_BASE?: string;
-}
-
-interface ImportMeta {
-  readonly env?: ImportMetaEnv;
-}
+// (obsolete) Vite-specific env types are not used in Next.js app.
+// Keeping this file empty to avoid accidental global type pollution.

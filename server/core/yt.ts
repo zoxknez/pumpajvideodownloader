@@ -6,16 +6,17 @@ const MAX_BUFFER = 64 * 1024 * 1024; // 64MB
 
 export async function dumpJson(url: string, opts?: { timeoutMs?: number; signal?: AbortSignal; args?: Record<string, any> }) {
   const timeoutMs = opts?.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-  const timeoutSig: AbortSignal | undefined = ('timeout' in AbortSignal) ? (AbortSignal as any).timeout(timeoutMs) : newAbortWithTimeout(timeoutMs);
+  const timeoutSig: AbortSignal & { cleanup?: () => void } = (AbortSignal as any)?.timeout
+    ? (AbortSignal as any).timeout(timeoutMs)
+    : newAbortWithTimeout(timeoutMs);
   const ctrl = combineSignals(opts?.signal, timeoutSig);
   const raw = await (youtubedl as any)(url, {
     dumpSingleJson: true,
     noCheckCertificates: true,
     noWarnings: true,
     ignoreErrors: false,
-    // Safer network behavior
-    socketTimeout: 15,
-    noPlaylist: true,
+    retries: 5,
+    socketTimeout: 20,
     ...(opts?.args || {}),
   }, { shell: false, windowsHide: true, signal: ctrl, maxBuffer: MAX_BUFFER, env: cleanedChildEnv(process.env) });
   try {
@@ -44,26 +45,32 @@ export async function dumpJson(url: string, opts?: { timeoutMs?: number; signal?
     // String case
     const text = String(raw);
     return JSON.parse(text);
-  } finally { (timeoutSig as any)?.cleanup?.(); }
+  } finally {
+    timeoutSig?.cleanup?.();
+  }
 }
 
 function newAbortWithTimeout(ms: number) {
   const ac = new AbortController();
-  const t = setTimeout(() => ac.abort('timeout'), ms);
-  (ac.signal as any).cleanup = () => clearTimeout(t);
-  return ac.signal as AbortSignal & { cleanup?: () => void };
+  const timer = setTimeout(() => ac.abort('timeout'), ms);
+  const signal = ac.signal as AbortSignal & { cleanup?: () => void };
+  signal.cleanup = () => clearTimeout(timer);
+  return signal;
 }
 
 // Remove proxy-related env vars from the child process to reduce SSRF/leak risk
 export function cleanedChildEnv(base: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const env = { ...base };
-  const keys = [
-    'HTTP_PROXY', 'http_proxy',
-    'HTTPS_PROXY', 'https_proxy',
-    'NO_PROXY', 'no_proxy',
-    'ALL_PROXY', 'all_proxy',
-  ];
-  for (const k of keys) delete (env as any)[k];
+  const allowProxy = base.ALLOW_UPSTREAM_PROXY === '1';
+  if (!allowProxy) {
+    const keys = [
+      'HTTP_PROXY', 'http_proxy',
+      'HTTPS_PROXY', 'https_proxy',
+      'NO_PROXY', 'no_proxy',
+      'ALL_PROXY', 'all_proxy',
+    ];
+    for (const k of keys) delete (env as any)[k];
+  }
   return env;
 }
 

@@ -3,10 +3,10 @@
   "private": true,
   "type": "module",
   "engines": {
-    "node": ">=20.0.0"
+    "node": ">=18.18.0"
   },
   "scripts": {
-    "dev": "tsx watch index.ts",
+    "dev": "tsx watch --ignore data/** --ignore logs/** index.ts",
     "start": "node dist/index.js",
     "build": "tsc -p tsconfig.json",
     "test": "vitest run",
@@ -18,7 +18,9 @@
     "cors": "^2.8.5",
     "express": "^5.1.0",
     "express-rate-limit": "^8.1.0",
-    "ffmpeg-static": "^5.2.0",
+  "ffmpeg-static": "^5.2.0",
+  "prom-client": "^15.1.2",
+  "bcryptjs": "^2.4.3",
     "helmet": "^8.1.0",
     "hpp": "^0.2.3",
     "jsonwebtoken": "^9.0.2",
@@ -27,7 +29,8 @@
   },
   "devDependencies": {
     "@types/cors": "^2.8.17",
-    "@types/express": "^5.0.3",
+  "@types/express": "^5.0.3",
+  "@types/bcryptjs": "^2.4.6",
   "@types/helmet": "^4.0.0",
   "@types/supertest": "^2.0.16",
     "supertest": "^7.1.1",

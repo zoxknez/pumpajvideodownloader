@@ -1,0 +1,290 @@
+<!DOCTYPE html>
+<html lang="sr">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Pumpaj • Prijava</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      font-family: "Inter", "Segoe UI", sans-serif;
+      --bg: radial-gradient(circle at top left, rgba(244,63,94,0.18) 0%, rgba(15,23,42,0.95) 48%),
+            radial-gradient(circle at bottom right, rgba(59,130,246,0.12) 0%, rgba(15,23,42,0.98) 55%),
+            linear-gradient(135deg, #111827 0%, #0f172a 100%);
+      --card-bg: rgba(15, 23, 42, 0.82);
+      --card-border: rgba(248, 113, 113, 0.35);
+      --accent: #f43f5e;
+      --accent-light: #fb7185;
+      --muted: rgba(248, 250, 252, 0.65);
+      --error: #f87171;
+      --success: #34d399;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: var(--bg);
+      color: #f8fafc;
+    }
+    main {
+      width: 100%;
+      max-width: 420px;
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      border-radius: 28px;
+      padding: 32px;
+      box-shadow: 0 30px 70px rgba(15, 23, 42, 0.55);
+      display: flex;
+      flex-direction: column;
+      gap: 18px;
+    }
+    .logo {
+      width: 64px;
+      height: 64px;
+      border-radius: 22px;
+      background: linear-gradient(135deg, rgba(244,63,94,0.92), rgba(59,130,246,0.75));
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 700;
+      font-size: 1.4rem;
+      letter-spacing: 1px;
+      box-shadow: 0 16px 36px rgba(244,63,94,0.32);
+    }
+    h1 {
+      margin: 0;
+      font-size: 1.8rem;
+      font-weight: 700;
+    }
+    p.subtitle {
+      margin: 0;
+      font-size: 0.95rem;
+      color: var(--muted);
+    }
+    form {
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+    label { display: flex; flex-direction: column; gap: 6px; font-size: 0.85rem; color: var(--muted); }
+    input[type="text"], input[type="password"], input[type="email"] {
+      padding: 12px 14px;
+      border-radius: 14px;
+      border: 1px solid rgba(148,163,184,0.2);
+      background: rgba(15,23,42,0.65);
+      color: #f8fafc;
+      font-size: 0.95rem;
+      transition: border 160ms ease, box-shadow 160ms ease;
+    }
+    input:focus {
+      outline: none;
+      border-color: var(--accent-light);
+      box-shadow: 0 0 0 3px rgba(248, 113, 113, 0.2);
+    }
+    button {
+      padding: 12px 16px;
+      border-radius: 999px;
+      border: none;
+      background: linear-gradient(135deg, var(--accent), var(--accent-light));
+      color: white;
+      font-size: 0.95rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: transform 160ms ease, box-shadow 160ms ease, opacity 160ms ease;
+      box-shadow: 0 18px 36px rgba(244, 63, 94, 0.32);
+    }
+    button:hover:not([disabled]) { transform: translateY(-1px); }
+    button[disabled] { opacity: 0.55; cursor: not-allowed; }
+    .link-btn {
+      background: transparent;
+      box-shadow: none;
+      padding: 8px;
+      color: var(--accent-light);
+      font-size: 0.85rem;
+      text-decoration: underline;
+      align-self: flex-start;
+    }
+    .status {
+      font-size: 0.85rem;
+      min-height: 18px;
+      color: var(--muted);
+    }
+    .status.error { color: var(--error); }
+    .status.success { color: var(--success); }
+    .status.info { color: var(--muted); }
+    .api-hint {
+      font-size: 0.75rem;
+      color: rgba(148,163,184,0.65);
+      margin-top: -6px;
+    }
+    .stack { display: flex; flex-direction: column; gap: 8px; }
+  </style>
+</head>
+<body>
+  <main>
+    <div class="stack">
+  <div class="logo">PM</div>
+      <h1>Pumpaj Media Downloader</h1>
+      <p class="subtitle">Prijavi se na svoj nalog da otključaš desktop aplikaciju.</p>
+      <p class="api-hint">Server: <span id="api-base">…</span></p>
+      <p class="status info" id="status"></p>
+    </div>
+
+    <form id="login-form" autocomplete="on">
+      <label>
+        Korisničko ime
+        <input type="text" id="login-username" autocomplete="username" required />
+      </label>
+      <label>
+        Lozinka
+        <input type="password" id="login-password" autocomplete="current-password" required />
+      </label>
+      <button type="submit" id="login-submit">Prijavi se</button>
+    </form>
+
+    <button type="button" class="link-btn" id="toggle-register">Nemate nalog? Registrujte se</button>
+
+    <form id="register-form" hidden autocomplete="on">
+      <label>
+        Korisničko ime
+        <input type="text" id="register-username" autocomplete="username" required />
+      </label>
+      <label>
+        Email (opciono)
+        <input type="email" id="register-email" autocomplete="email" placeholder="name@example.com" />
+      </label>
+      <label>
+        Lozinka
+        <input type="password" id="register-password" autocomplete="new-password" required />
+      </label>
+      <label>
+        Potvrdi lozinku
+        <input type="password" id="register-password-confirm" autocomplete="new-password" required />
+      </label>
+      <button type="submit" id="register-submit">Kreiraj nalog</button>
+    </form>
+  </main>
+
+  <script>
+    (function () {
+      const statusEl = document.getElementById('status');
+      const apiBaseEl = document.getElementById('api-base');
+      const loginForm = document.getElementById('login-form');
+      const registerForm = document.getElementById('register-form');
+      const toggleRegisterBtn = document.getElementById('toggle-register');
+      const loginSubmit = document.getElementById('login-submit');
+      const registerSubmit = document.getElementById('register-submit');
+
+      window.api?.auth?.baseUrl?.().then((res) => {
+        if (res?.url) apiBaseEl.textContent = res.url;
+      }).catch(() => {});
+
+      function setStatus(message, kind = 'info') {
+        statusEl.textContent = message || '';
+        statusEl.className = `status ${kind}`;
+      }
+
+      function setLoading(state) {
+        loginSubmit.disabled = state;
+        registerSubmit.disabled = state;
+      }
+
+      toggleRegisterBtn.addEventListener('click', () => {
+        const isHidden = registerForm.hasAttribute('hidden');
+        if (isHidden) {
+          registerForm.removeAttribute('hidden');
+          toggleRegisterBtn.textContent = 'Već imate nalog? Prijavite se';
+          setStatus('Popunite podatke za registraciju.', 'info');
+        } else {
+          registerForm.setAttribute('hidden', 'hidden');
+          toggleRegisterBtn.textContent = 'Nemate nalog? Registrujte se';
+          setStatus('', 'info');
+        }
+      });
+
+      loginForm.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        const username = document.getElementById('login-username').value.trim();
+        const password = document.getElementById('login-password').value;
+        if (!username || !password) {
+          setStatus('Unesite korisničko ime i lozinku.', 'error');
+          return;
+        }
+        setLoading(true);
+        setStatus('Prijavljivanje…', 'info');
+        try {
+          const result = await window.api.auth.login({ username, password });
+          if (!result?.ok) {
+            setStatus(result?.error || 'Prijava nije uspela.', 'error');
+            setLoading(false);
+            return;
+          }
+          setStatus('Uspešna prijava! Učitavam aplikaciju…', 'success');
+        } catch (err) {
+          setStatus(err?.message || 'Greška prilikom prijave.', 'error');
+          setLoading(false);
+        }
+      });
+
+      registerForm.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        const username = document.getElementById('register-username').value.trim();
+        const email = document.getElementById('register-email').value.trim();
+        const password = document.getElementById('register-password').value;
+        const confirm = document.getElementById('register-password-confirm').value;
+        if (!username || !password) {
+          setStatus('Unesite korisničko ime i lozinku.', 'error');
+          return;
+        }
+        if (password.length < 6) {
+          setStatus('Lozinka mora imati najmanje 6 karaktera.', 'error');
+          return;
+        }
+        if (password !== confirm) {
+          setStatus('Lozinke se ne poklapaju.', 'error');
+          return;
+        }
+        setLoading(true);
+        setStatus('Registracija…', 'info');
+        try {
+          const payload = { username, password };
+          if (email) payload.email = email;
+          const result = await window.api.auth.register(payload);
+          if (!result?.ok) {
+            setStatus(result?.error || 'Registracija nije uspela.', 'error');
+            setLoading(false);
+            return;
+          }
+          setStatus('Nalog je kreiran! Sada se prijavite svojim podacima.', 'success');
+          registerForm.setAttribute('hidden', 'hidden');
+          toggleRegisterBtn.textContent = 'Nemate nalog? Registrujte se';
+          setLoading(false);
+        } catch (err) {
+          setStatus(err?.message || 'Greška prilikom registracije.', 'error');
+          setLoading(false);
+        }
+      });
+
+      window.api?.auth?.onState?.((payload) => {
+        if (payload?.user) {
+          setStatus(`Dobrodošli, ${payload.user.username || payload.user.email || 'korisniče'}!`, 'success');
+        } else {
+          setStatus('', 'info');
+          setLoading(false);
+        }
+      });
+
+      // Ako je sesija već validna, pokušaj da je potvrdiš (fallback safety)
+      window.api?.auth?.whoami?.().then((res) => {
+        if (res?.ok && res.user) {
+          setStatus(`Već ste prijavljeni kao ${res.user.username || 'korisnik'}…`, 'success');
+        }
+      }).catch(() => {});
+    })();
+  </script>
+</body>
+</html>

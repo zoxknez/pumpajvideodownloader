@@ -10,6 +10,7 @@ export function applySecurity(app: Express, corsOrigin?: string) {
         "default-src": ["'self'"],
         "img-src": ["'self'", 'data:', 'blob:'],
         "connect-src": ["'self'", corsOrigin || "'self'"],
+        "media-src": ["'self'", 'blob:'],
         "script-src": ["'self'"],
         "style-src": ["'self'", "'unsafe-inline'"],
         "object-src": ["'none'"],
@@ -17,7 +18,8 @@ export function applySecurity(app: Express, corsOrigin?: string) {
       }
     } : false,
     frameguard: { action: 'deny' },
-    referrerPolicy: { policy: 'no-referrer' }
+    referrerPolicy: { policy: 'no-referrer' },
+    crossOriginEmbedderPolicy: false,
   } as any));
   app.use(hpp());
 }

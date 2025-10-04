@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Settings as SettingsIcon, Monitor, Download as DownloadIcon, Folder, Wifi, Cpu, Shield, Database, Zap, Activity, LogOut, Sparkles } from 'lucide-react';
+import { Settings as SettingsIcon, Monitor, Download as DownloadIcon, Folder, Wifi, Cpu, Shield, Database, Zap, Activity, LogOut, Sparkles, User, CheckCircle2, Lock } from 'lucide-react';
 import { getJobsSettings, updateJobsSettings, API_BASE, authHeaders } from '../lib/api';
 import { useClientSettings } from './SettingsContext';
 import { useToast } from './ToastProvider';
@@ -8,8 +8,10 @@ import { useAuth, usePolicy } from './AuthProvider';
 import { PolicyBadge } from './PolicyBadge';
 import { openPremiumUpgrade } from '../lib/premium';
 
+type SectionId = 'plan' | 'general' | 'downloads' | 'quality' | 'network' | 'privacy' | 'system' | 'diagnostics' | 'advanced';
+
 interface SettingsSection {
-  id: string;
+  id: SectionId;
   title: string;
   icon: React.ElementType;
   description: string;
@@ -28,7 +30,7 @@ const PREMIUM_SPEED_LIMIT_LABEL = 'Bez limita';
 export const SettingsTab: React.FC = () => {
   const { settings: clientSettings, setSettings: setClientSettings } = useClientSettings();
   const { success, error } = useToast();
-  const [activeSection, setActiveSection] = useState<'general'|'downloads'|'quality'|'network'|'privacy'|'system'|'diagnostics'|'advanced'>('general');
+  const [activeSection, setActiveSection] = useState<SectionId>('plan');
   const STORAGE_KEY = 'app:settings:v1';
   const [settings, setSettings] = useState({
     // General
@@ -80,10 +82,16 @@ export const SettingsTab: React.FC = () => {
   const [serverInfo, setServerInfo] = useState<{ name?: string; version?: string; node?: string; platform?: string; ytDlp?: string; ffmpeg?: string; ffmpegVersion?: string; checks?: { ytdlpAvailable?: boolean; ffmpegAvailable?: boolean } } | null>(null);
   const [logLines, setLogLines] = useState<string[] | null>(null);
   const [loggingOut, setLoggingOut] = useState(false);
+  const planTooltipButtonRef = useRef<HTMLButtonElement | null>(null);
+  const planTooltipRef = useRef<HTMLDivElement | null>(null);
+  const [isPlanTooltipOpen, setIsPlanTooltipOpen] = useState(false);
   const isIpc = typeof window !== 'undefined' && Boolean((window as any).api?.analyze || (window as any).api?.start);
   const [ipcSettings, setIpcSettings] = useState<{ maxConcurrent: number; proxyUrl: string; proxyEnabled?: boolean; limitRateKib: number; connections: number; openOnComplete?: boolean; filenameTemplate?: string; subtitles?: { enabled?: boolean; embed?: boolean; languages?: string }; playlistItems?: string; clipboardWatcher?: boolean; pauseNewJobs?: boolean; autoAnalyzeClipboard?: boolean; closeToTray?: boolean; startMinimized?: boolean; launchOnStartup?: boolean; preventSleepWhileDownloading?: boolean; confirmOnQuitIfJobs?: boolean; resumeQueuedOnStartup?: boolean; downloadsRootDir?: string; skipExisting?: boolean; useDownloadArchive?: boolean } | null>(null);
   const [binStatus, setBinStatus] = useState<{ ytdlp: boolean; ffmpeg: boolean; ffprobe: boolean } | null>(null);
   const [ipcMetrics, setIpcMetrics] = useState<{ running: number; queued: number; maxConcurrent: number } | null>(null);
+  const [updateStatus, setUpdateStatus] = useState<{ app?: any; ytdlp?: any } | null>(null);
+  const [checkingAppUpdate, setCheckingAppUpdate] = useState(false);
+  const [updatingYtDlp, setUpdatingYtDlp] = useState(false);
 
   // Load settings and server info
   useEffect(() => {
@@ -197,6 +205,7 @@ export const SettingsTab: React.FC = () => {
   }, [isIpc, ipcSettings?.maxConcurrent]);
 
   const sections: SettingsSection[] = [
+    { id: 'plan', title: 'Plan & Account', icon: Sparkles, description: 'Features overview and upgrades' },
     { id: 'general', title: 'General', icon: SettingsIcon, description: 'Basic app preferences' },
     { id: 'downloads', title: 'Downloads', icon: DownloadIcon, description: 'Download behavior and paths' },
     { id: 'quality', title: 'Quality', icon: Monitor, description: 'Default quality settings' },
@@ -208,24 +217,56 @@ export const SettingsTab: React.FC = () => {
   ];
 
   const isPremiumPlan = policy.plan === 'PREMIUM';
+  const planBadgeClass = isPremiumPlan
+    ? 'border-emerald-400/40 bg-emerald-500/15 text-emerald-100'
+    : 'border-amber-400/40 bg-amber-500/15 text-amber-100';
+  const planLabel = isPremiumPlan ? 'Premium' : 'Free';
 
   const planHighlights = useMemo(() => {
     const formatSpeedLimit = (limit?: number) => (limit && limit > 0 ? `${limit} kbps limit` : PREMIUM_SPEED_LIMIT_LABEL);
-    const boolLabel = (value: boolean) => (value ? 'Dostupno' : 'Zaključano');
+    const boolLabel = (value: boolean) => (value ? 'Available' : 'Locked');
     return [
-      { label: 'Video kvalitet', current: `${policy.maxHeight}p`, premium: `${PREMIUM_BASELINE.maxHeight}p`, unlocked: policy.maxHeight >= PREMIUM_BASELINE.maxHeight },
+      { label: 'Video Quality', current: `${policy.maxHeight}p`, premium: `${PREMIUM_BASELINE.maxHeight}p`, unlocked: policy.maxHeight >= PREMIUM_BASELINE.maxHeight },
       { label: 'Audio bitrate', current: `${policy.maxAudioKbps} kbps`, premium: `${PREMIUM_BASELINE.maxAudioKbps} kbps`, unlocked: policy.maxAudioKbps >= PREMIUM_BASELINE.maxAudioKbps },
-      { label: 'Playlist stavke', current: `${policy.playlistMax}`, premium: `${PREMIUM_BASELINE.playlistMax}`, unlocked: policy.playlistMax >= PREMIUM_BASELINE.playlistMax },
-      { label: 'Batch zadaci', current: `${policy.batchMax}`, premium: `${PREMIUM_BASELINE.batchMax}`, unlocked: policy.batchMax >= PREMIUM_BASELINE.batchMax },
-      { label: 'Paralelnih poslova', current: `${policy.concurrentJobs}`, premium: `${PREMIUM_BASELINE.concurrentJobs}`, unlocked: policy.concurrentJobs >= PREMIUM_BASELINE.concurrentJobs },
-      { label: 'Brzina preuzimanja', current: formatSpeedLimit(policy.speedLimitKbps), premium: PREMIUM_SPEED_LIMIT_LABEL, unlocked: !policy.speedLimitKbps },
-      { label: 'Titlovi', current: boolLabel(policy.allowSubtitles), premium: 'Dostupno', unlocked: policy.allowSubtitles },
-      { label: 'Poglavlja', current: boolLabel(policy.allowChapters), premium: 'Dostupno', unlocked: policy.allowChapters },
-      { label: 'Meta podaci', current: boolLabel(policy.allowMetadata), premium: 'Dostupno', unlocked: policy.allowMetadata },
+      { label: 'Playlist Items', current: `${policy.playlistMax}`, premium: `${PREMIUM_BASELINE.playlistMax}`, unlocked: policy.playlistMax >= PREMIUM_BASELINE.playlistMax },
+      { label: 'Batch Tasks', current: `${policy.batchMax}`, premium: `${PREMIUM_BASELINE.batchMax}`, unlocked: policy.batchMax >= PREMIUM_BASELINE.batchMax },
+      { label: 'Concurrent Jobs', current: `${policy.concurrentJobs}`, premium: `${PREMIUM_BASELINE.concurrentJobs}`, unlocked: policy.concurrentJobs >= PREMIUM_BASELINE.concurrentJobs },
+      { label: 'Download Speed', current: formatSpeedLimit(policy.speedLimitKbps), premium: PREMIUM_SPEED_LIMIT_LABEL, unlocked: !policy.speedLimitKbps },
+      { label: 'Subtitles', current: boolLabel(policy.allowSubtitles), premium: 'Available', unlocked: policy.allowSubtitles },
+      { label: 'Chapters', current: boolLabel(policy.allowChapters), premium: 'Available', unlocked: policy.allowChapters },
+      { label: 'Metadata', current: boolLabel(policy.allowMetadata), premium: 'Available', unlocked: policy.allowMetadata },
     ];
   }, [policy]);
 
   const lockedHighlightLabels = useMemo(() => planHighlights.filter((item) => !item.unlocked).map((item) => item.label), [planHighlights]);
+
+  useEffect(() => {
+    if (!isPlanTooltipOpen) return;
+    const handlePointerDown = (event: MouseEvent) => {
+      const target = event.target as Node;
+      if (planTooltipRef.current?.contains(target) || planTooltipButtonRef.current?.contains(target)) {
+        return;
+      }
+      setIsPlanTooltipOpen(false);
+    };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setIsPlanTooltipOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handlePointerDown);
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', handlePointerDown);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [isPlanTooltipOpen]);
+
+  useEffect(() => {
+    if (activeSection !== 'plan' && isPlanTooltipOpen) {
+      setIsPlanTooltipOpen(false);
+    }
+  }, [activeSection, isPlanTooltipOpen]);
 
   const handleUpgradeClick = useCallback(() => {
     openPremiumUpgrade('settings-plan-card');
@@ -248,6 +289,91 @@ export const SettingsTab: React.FC = () => {
       success('Default folder saved.');
     } catch {}
   };
+
+  const refreshUpdateStatus = useCallback(async () => {
+    if (!isIpc) return;
+    try {
+      const res = await (window as any).api?.updates?.getStatus?.();
+      if (res?.ok) setUpdateStatus(res.data || null);
+    } catch {}
+  }, [isIpc]);
+
+  const handleCheckAppUpdate = useCallback(async () => {
+    if (!isIpc) return;
+    if (!(window as any).api?.updates?.checkApp) { error('Update API not available.'); return; }
+    setCheckingAppUpdate(true);
+    try {
+      const res = await (window as any).api.updates.checkApp();
+      if (res?.ok) {
+        setUpdateStatus((prev) => ({ ...(prev || {}), app: res }));
+        if (res.hasUpdate) {
+          success(res.latestVersion ? `New version ${res.latestVersion} is available.` : 'New application version is available.');
+        } else {
+          success('Application is already up to date.');
+        }
+      } else {
+        error(res?.error || 'Check failed.');
+      }
+    } catch {
+      error('Check failed.');
+    } finally {
+      setCheckingAppUpdate(false);
+      refreshUpdateStatus();
+    }
+  }, [isIpc, success, error, refreshUpdateStatus]);
+
+  const handleOpenAppRelease = useCallback(async () => {
+    if (!isIpc) return;
+    try {
+      const res = await (window as any).api?.updates?.openLatestRelease?.();
+      if (!res?.ok) error(res?.error || 'Cannot open release.');
+    } catch {
+      error('Cannot open release.');
+    }
+  }, [isIpc, error]);
+
+  const handleUpdateYtDlp = useCallback(async () => {
+    if (!isIpc) return;
+    if (!(window as any).api?.updates?.updateYtDlp) { error('Update API not available.'); return; }
+    setUpdatingYtDlp(true);
+    try {
+      const res = await (window as any).api.updates.updateYtDlp();
+      if (res?.ok) {
+        success(res.latestVersion ? `yt-dlp updated to ${res.latestVersion}` : 'yt-dlp updated.');
+        if (res?.status?.ok) setUpdateStatus((prev) => ({ ...(prev || {}), ytdlp: res.status }));
+        refreshUpdateStatus();
+        const check = await (window as any).api?.checkBinaries?.();
+        if (check?.ok && check?.data) setBinStatus({ ytdlp: !!check.data.ytdlp, ffmpeg: !!check.data.ffmpeg, ffprobe: !!check.data.ffprobe });
+      } else {
+        error(res?.error || 'Update failed.');
+      }
+    } catch {
+      error('Update failed.');
+    } finally {
+      setUpdatingYtDlp(false);
+    }
+  }, [isIpc, success, error, refreshUpdateStatus]);
+
+  const handleRefreshBinaries = useCallback(async () => {
+    if (!isIpc) return;
+    try {
+      const r = await (window as any).api?.checkBinaries?.();
+      if (r?.ok && r?.data) {
+        setBinStatus({ ytdlp: !!r.data.ytdlp, ffmpeg: !!r.data.ffmpeg, ffprobe: !!r.data.ffprobe });
+        success('Binaries status refreshed');
+      } else {
+        error('Refresh failed');
+      }
+      refreshUpdateStatus();
+    } catch {
+      error('Refresh failed');
+    }
+  }, [isIpc, success, error, refreshUpdateStatus]);
+
+  useEffect(() => {
+    if (!isIpc) return;
+    refreshUpdateStatus();
+  }, [isIpc, refreshUpdateStatus]);
 
   const ToggleSwitch: React.FC<{ enabled: boolean; onChange: (value: boolean) => void; label: string; description?: string }> = ({ enabled, onChange, label, description }) => (
     <div className="flex items-center justify-between p-4 bg-white/5 rounded-xl border border-white/10">
@@ -277,6 +403,24 @@ export const SettingsTab: React.FC = () => {
       <select value={value} onChange={(e) => onChange(e.target.value)} className="w-full px-4 py-3 bg-white/10 border border-white/20 rounded-xl text-white focus:border-purple-500 focus:ring-2 focus:ring-purple-500/25 transition-all duration-300 outline-none">
         {options.map((option) => (<option key={option.value} value={option.value} className="bg-slate-800">{option.label}</option>))}
       </select>
+    </div>
+  );
+
+  const SectionCard: React.FC<{ title?: string; description?: string; icon?: React.ElementType; headingRight?: React.ReactNode; className?: string; bodyClassName?: string; children: React.ReactNode }> = ({ title, description, icon: Icon, headingRight, className, bodyClassName, children }) => (
+    <div className={`rounded-2xl border border-white/15 bg-white/5 p-5 shadow-lg ${className ?? ''}`}>
+      {(title || description || Icon || headingRight) && (
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between sm:gap-4 mb-4">
+          <div>
+            <div className="flex items-center gap-2">
+              {Icon && <Icon className="w-5 h-5 text-white/70" />}
+              {title && <h3 className="text-white font-semibold text-lg">{title}</h3>}
+            </div>
+            {description && <p className="text-white/60 text-sm mt-1 leading-relaxed">{description}</p>}
+          </div>
+          {headingRight && <div className="flex-shrink-0">{headingRight}</div>}
+        </div>
+      )}
+      <div className={bodyClassName}>{children}</div>
     </div>
   );
 
@@ -336,74 +480,154 @@ export const SettingsTab: React.FC = () => {
         {/* Right: content */}
         <div className="lg:col-span-3 h-full flex flex-col">
           <div className="flex-1 flex flex-col">
-            {/* General */}
-            {activeSection === 'general' && (
+            {/* Plan */}
+            {activeSection === 'plan' && (
               <div className="space-y-6">
-                <div className="rounded-2xl border border-white/15 bg-white/5 p-5 shadow-lg">
-                  <div className="flex flex-col gap-5 lg:flex-row lg:items-start">
-                    <PolicyBadge className="w-full lg:max-w-[260px]" />
-                    <div className="flex-1 space-y-4">
-                      <div>
-                        <div className="text-[11px] font-semibold uppercase tracking-wide text-white/60">Trenutni plan</div>
-                        <div className="text-lg font-semibold text-white">
-                          {isPremiumPlan ? 'Premium pristup aktivan' : 'Free plan aktivan'}
-                        </div>
-                        <div className="mt-1 text-[13px] text-white/70">
-                          {isPremiumPlan
-                            ? 'Uživaj u punom kvalitetu, titlovima i prioritetnoj obradi.'
-                            : 'Dobijaš osnovne mogućnosti i ograničen kvalitet. Nadogradi za maksimalne brzine i dodatke.'}
+                <SectionCard
+                  icon={Sparkles}
+                  title="Your Plan"
+                  description="Overview of the most important benefits and account status."
+                  className="relative overflow-visible"
+                  headingRight={(
+                    <button
+                      ref={planTooltipButtonRef}
+                      onClick={() => setIsPlanTooltipOpen((prev) => !prev)}
+                      className="relative inline-flex items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-purple-600 to-pink-600 px-4 py-2 text-sm font-semibold text-white shadow-lg transition hover:from-purple-500 hover:to-pink-500"
+                    >
+                      <Sparkles className="h-4 w-4" />
+                      Compare Plans
+                    </button>
+                  )}
+                  bodyClassName="flex flex-col gap-6 lg:flex-row"
+                >
+                  <div className="flex-1 space-y-4">
+                    <div>
+                      <div className="inline-flex items-center gap-2 rounded-full border border-white/20 bg-white/10 px-3 py-1 text-xs uppercase tracking-wide text-white/70">
+                        Plan Status
+                      </div>
+                      <div className="mt-3 text-2xl font-semibold text-white">
+                        {isPremiumPlan ? 'Premium access is active' : 'Free plan is currently active'}
+                      </div>
+                      <p className="mt-2 text-white/70 text-sm leading-relaxed">
+                        {isPremiumPlan
+                          ? 'You get full video and audio quality, advanced options and priority task processing.'
+                          : 'Basic functions are available, but quality and concurrent jobs are limited. Upgrade unlocks speeds, subtitles and additional features.'}
+                      </p>
+                    </div>
+
+                    {!isPremiumPlan && lockedHighlightLabels.length > 0 && (
+                      <div className="space-y-2">
+                        <div className="text-xs font-semibold uppercase tracking-wide text-white/50">Premium unlocks</div>
+                        <div className="flex flex-wrap gap-2">
+                          {lockedHighlightLabels.map((label) => (
+                            <span key={label} className="rounded-full border border-amber-400/40 bg-amber-500/15 px-3 py-1 text-xs text-amber-100">
+                              {label}
+                            </span>
+                          ))}
                         </div>
                       </div>
-                      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3">
+                    )}
+
+                    {isPremiumPlan ? (
+                      <div className="inline-flex items-center gap-2 rounded-xl border border-emerald-400/40 bg-emerald-500/15 px-4 py-2 text-sm font-semibold text-emerald-100">
+                        <CheckCircle2 className="h-4 w-4" />
+                        Sve premium funkcije su dostupne
+                      </div>
+                    ) : (
+                      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:gap-4">
+                        <button
+                          onClick={handleUpgradeClick}
+                          className="inline-flex items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-purple-600 to-pink-600 px-4 py-2 text-sm font-semibold text-white shadow-lg hover:from-purple-500 hover:to-pink-500"
+                        >
+                          <Sparkles className="h-4 w-4" />
+                          Nadogradi na Premium
+                        </button>
+                        <span className="text-xs text-white/60">
+                          Premium donosi veće rezolucije, više paralelnih downloada i napredne opcije kao što su titlovi i metapodaci.
+                        </span>
+                      </div>
+                    )}
+                  </div>
+                  <div className="w-full lg:max-w-[280px]">
+                    <PolicyBadge className="w-full" />
+                  </div>
+                  {isPlanTooltipOpen && (
+                    <div
+                      ref={planTooltipRef}
+                      className="absolute right-5 top-[calc(100%+16px)] z-20 w-[min(90vw,360px)] rounded-2xl border border-white/20 bg-slate-900/95 p-4 shadow-2xl backdrop-blur"
+                    >
+                      <div className="flex items-center justify-between gap-3">
+                        <div>
+                          <div className="text-xs font-semibold uppercase tracking-wide text-white/50">Uporedi planove</div>
+                          <div className="mt-1 text-base font-semibold text-white">Premium vs {isPremiumPlan ? 'tvoj plan' : 'Free plan'}</div>
+                        </div>
+                        <button
+                          onClick={() => setIsPlanTooltipOpen(false)}
+                          className="text-white/60 text-xs font-semibold underline-offset-2 hover:text-white"
+                        >
+                          Zatvori
+                        </button>
+                      </div>
+                      <div className="mt-4 space-y-3">
                         {planHighlights.map((item) => (
-                          <div
-                            key={item.label}
-                            className={`rounded-xl border px-3 py-3 transition-colors ${
-                              item.unlocked
-                                ? 'border-emerald-400/40 bg-emerald-500/10 text-emerald-100'
-                                : 'border-white/15 bg-white/5 text-white/90'
-                            }`}
-                          >
-                            <div className="text-[11px] uppercase tracking-wide text-white/60">{item.label}</div>
-                            <div className="text-base font-semibold text-white">{item.current}</div>
-                            {!item.unlocked && item.premium && (
-                              <div className="mt-1 text-[11px] text-amber-200/90">Premium: {item.premium}</div>
+                          <div key={item.label} className="rounded-xl border border-white/12 bg-white/5 px-3 py-3">
+                            <div className="flex items-start justify-between gap-3">
+                              <div>
+                                <div className="text-sm font-medium text-white">{item.label}</div>
+                                <div className="text-xs text-white/60">Aktuelno: {item.current}</div>
+                              </div>
+                              <span
+                                className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-semibold ${
+                                  item.unlocked ? 'bg-emerald-500/15 text-emerald-100' : 'bg-amber-500/15 text-amber-100'
+                                }`}
+                              >
+                                {item.unlocked ? <CheckCircle2 className="h-3.5 w-3.5" /> : <Lock className="h-3.5 w-3.5" />}
+                                {item.unlocked ? 'Otključano' : 'Premium' }
+                              </span>
+                            </div>
+                            {item.premium && (
+                              <div className="mt-2 text-xs text-white/70">Premium: {item.premium}</div>
                             )}
                           </div>
                         ))}
                       </div>
                       {!isPremiumPlan && (
-                        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                          <div className="text-xs text-white/70">
-                            {lockedHighlightLabels.length > 0
-                              ? `Premium otključava: ${lockedHighlightLabels.join(', ')}`
-                              : 'Premium donosi veći kvalitet, brzine i prioritet u redu.'}
-                          </div>
-                          <button
-                            onClick={handleUpgradeClick}
-                            className="inline-flex items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-purple-600 to-pink-600 px-4 py-2 text-sm font-semibold text-white shadow-lg hover:from-purple-500 hover:to-pink-500"
-                          >
-                            <Sparkles className="h-4 w-4" />
-                            Saznaj više o Premium
-                          </button>
-                        </div>
+                        <button
+                          onClick={() => {
+                            setIsPlanTooltipOpen(false);
+                            handleUpgradeClick();
+                          }}
+                          className="mt-4 inline-flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-purple-600 to-pink-600 px-4 py-2 text-sm font-semibold text-white shadow-lg hover:from-purple-500 hover:to-pink-500"
+                        >
+                          <Sparkles className="h-4 w-4" />
+                          Pokreni nadogradnju
+                        </button>
                       )}
                     </div>
-                  </div>
-                </div>
+                  )}
+                </SectionCard>
 
                 {me && (
-                  <div className="flex items-center justify-between rounded-xl border border-white/15 bg-white/5 px-4 py-4">
+                  <SectionCard
+                    icon={User}
+                    title="Detalji naloga"
+                    description="Prijavljeni korisnik i brzi pristup odjavi."
+                    bodyClassName="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between"
+                  >
                     <div>
                       <div className="text-sm font-semibold text-white">Prijavljen kao</div>
                       <div className="text-sm text-white/80">{me.username || me.email || me.id}</div>
+                      <div className={`mt-3 inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs font-semibold uppercase tracking-wide ${planBadgeClass}`}>
+                        {isPremiumPlan ? <Sparkles className="h-3.5 w-3.5" /> : <Lock className="h-3.5 w-3.5" />}
+                        {planLabel} plan
+                      </div>
                     </div>
                     <button
                       onClick={async () => {
                         if (loggingOut) return;
                         setLoggingOut(true);
                         try {
-                          logout();
+                          await logout();
                         } finally {
                           setLoggingOut(false);
                         }
@@ -414,20 +638,36 @@ export const SettingsTab: React.FC = () => {
                       <LogOut className="h-4 w-4" />
                       {loggingOut ? 'Odjava…' : 'Odjavi se'}
                     </button>
-                  </div>
+                  </SectionCard>
                 )}
+              </div>
+            )}
 
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            {/* General */}
+            {activeSection === 'general' && (
+              <div className="space-y-6">
+                <SectionCard
+                  icon={SettingsIcon}
+                  title="Personalizacija"
+                  description="Izaberi jezik i temu interfejsa."
+                  bodyClassName="grid grid-cols-1 gap-6 md:grid-cols-2"
+                >
                   <SelectField label="Theme" value={settings.theme} onChange={(v) => handleSettingChange('theme', v)} options={[{ value: 'dark', label: 'Dark Theme' }, { value: 'light', label: 'Light Theme' }, { value: 'auto', label: 'Auto (System)' }]} />
                   <SelectField label="Language" value={settings.language} onChange={(v) => handleSettingChange('language', v)} options={[{ value: 'en', label: 'English' }, { value: 'es', label: 'Spanish' }, { value: 'fr', label: 'French' }, { value: 'de', label: 'German' }, { value: 'sr', label: 'Serbian' }]} />
-                </div>
+                </SectionCard>
 
-                <div className="space-y-4">
-                  <ToggleSwitch enabled={settings.autoStart} onChange={(v) => handleSettingChange('autoStart', v)} label="Auto Start" description="Launch application when system starts" />
-                  <ToggleSwitch enabled={settings.minimizeToTray} onChange={(v) => handleSettingChange('minimizeToTray', v)} label="Minimize to System Tray" description="Keep running in background when window is closed" />
-                  <ToggleSwitch enabled={settings.showNotifications} onChange={(v) => handleSettingChange('showNotifications', v)} label="Show Notifications" description="Display desktop notifications for downloads" />
-                  <ToggleSwitch enabled={settings.openFolderAfterSave} onChange={(v) => handleSettingChange('openFolderAfterSave', v)} label="Open folder after save" description="Opens the destination folder automatically when a file is saved" />
-                </div>
+                <SectionCard
+                  title="Obaveštenja i ponašanje"
+                  description="Kontroliši kako se aplikacija ponaša pri pokretanju i posle preuzimanja."
+                  bodyClassName="space-y-4"
+                >
+                  <div className="space-y-4 md:grid md:grid-cols-2 md:gap-4 md:space-y-0">
+                    <ToggleSwitch enabled={settings.autoStart} onChange={(v) => handleSettingChange('autoStart', v)} label="Auto Start" description="Pokreni aplikaciju zajedno sa sistemom" />
+                    <ToggleSwitch enabled={settings.minimizeToTray} onChange={(v) => handleSettingChange('minimizeToTray', v)} label="Minimizuj u tray" description="Zadrži aplikaciju aktivnom kada zatvoriš prozor" />
+                    <ToggleSwitch enabled={settings.showNotifications} onChange={(v) => handleSettingChange('showNotifications', v)} label="Obaveštenja" description="Prikaži obaveštenja kada se završi preuzimanje" />
+                    <ToggleSwitch enabled={settings.openFolderAfterSave} onChange={(v) => handleSettingChange('openFolderAfterSave', v)} label="Otvori folder nakon čuvanja" description="Automatski otvori odredišni folder nakon preuzimanja" />
+                  </div>
+                </SectionCard>
               </div>
             )}
 
@@ -699,11 +939,13 @@ export const SettingsTab: React.FC = () => {
                             Resume queued items on startup
                           </label>
                         </div>
-                        <div className="flex items-center gap-2 md:col-span-2">
+                        <div className="flex items-center gap-2 md:col-span-2 flex-wrap">
                           <button onClick={async () => { try { const r = await (window as any).api?.setSettings?.(ipcSettings || {}); if (r?.ok) { setIpcSettings({ maxConcurrent: r.data.maxConcurrent, proxyUrl: r.data.proxyUrl, proxyEnabled: (r.data.proxyEnabled ?? true), limitRateKib: r.data.limitRateKib, connections: r.data.connections, openOnComplete: !!r.data.openOnComplete, filenameTemplate: r.data.filenameTemplate, subtitles: r.data.subtitles, playlistItems: r.data.playlistItems, clipboardWatcher: !!r.data.clipboardWatcher, pauseNewJobs: !!r.data.pauseNewJobs, autoAnalyzeClipboard: !!r.data.autoAnalyzeClipboard, closeToTray: !!r.data.closeToTray, startMinimized: !!r.data.startMinimized, launchOnStartup: !!r.data.launchOnStartup, preventSleepWhileDownloading: !!r.data.preventSleepWhileDownloading, confirmOnQuitIfJobs: !!r.data.confirmOnQuitIfJobs, resumeQueuedOnStartup: !!r.data.resumeQueuedOnStartup, downloadsRootDir: String(r.data.downloadsRootDir || ''), skipExisting: !!r.data.skipExisting, useDownloadArchive: !!r.data.useDownloadArchive }); success('Settings saved'); } else { error('Save failed'); } } catch { error('Save failed'); } }} className="px-6 py-3 bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-500 hover:to-pink-500 text-white font-semibold rounded-xl transition-all duration-300 shadow-lg hover:shadow-xl">Save Desktop Settings</button>
                           <button onClick={async () => { try { const r = await (window as any).api?.openDownloads?.(); if (!r?.ok) throw new Error(); } catch {} }} className="px-4 py-3 bg-white/10 hover:bg-white/20 border border-white/20 rounded-xl text-white">Open Downloads Folder</button>
-                          <button onClick={async () => { try { const r = await (window as any).api?.updateBinaries?.(); if (r?.ok) { success('yt-dlp updated'); } else { error(r?.error || 'Update failed'); } } catch { error('Update failed'); } }} className="px-4 py-3 bg-white/10 hover:bg-white/20 border border-white/20 rounded-xl text-white">Update yt-dlp</button>
-                          <button onClick={async () => { try { const r = await (window as any).api?.checkBinaries?.(); if (r?.ok && r?.data) { setBinStatus({ ytdlp: !!r.data.ytdlp, ffmpeg: !!r.data.ffmpeg, ffprobe: !!r.data.ffprobe }); success('Binaries status refreshed'); } else { error('Refresh failed'); } } catch { error('Refresh failed'); } }} className="px-4 py-3 bg-white/10 hover:bg-white/20 border border-white/20 rounded-xl text-white">Refresh Status</button>
+                          <button onClick={handleCheckAppUpdate} disabled={checkingAppUpdate} className="px-4 py-3 bg-white/10 hover:bg-white/20 border border-white/20 rounded-xl text-white disabled:opacity-60 disabled:cursor-not-allowed">{checkingAppUpdate ? 'Checking…' : 'Check App Update'}</button>
+                          <button onClick={handleOpenAppRelease} className="px-4 py-3 bg-white/10 hover:bg-white/20 border border-white/20 rounded-xl text-white">Latest Release</button>
+                          <button onClick={handleUpdateYtDlp} disabled={updatingYtDlp} className="px-4 py-3 bg-white/10 hover:bg-white/20 border border-white/20 rounded-xl text-white disabled:opacity-60 disabled:cursor-not-allowed">{updatingYtDlp ? 'Updating yt-dlp…' : 'Update yt-dlp'}</button>
+                          <button onClick={handleRefreshBinaries} className="px-4 py-3 bg-white/10 hover:bg-white/20 border border-white/20 rounded-xl text-white">Refresh Status</button>
                           <button onClick={async () => { try { const r = await (window as any).api?.backupCreate?.(); if (r?.ok) { success('Backup created'); await (window as any).api?.openBackups?.(); } else { error(r?.error || 'Backup failed'); } } catch { error('Backup failed'); } }} className="px-4 py-3 bg-white/10 hover:bg-white/20 border border-white/20 rounded-xl text-white">Backup</button>
                           <button onClick={async () => { try { const pick = await (window as any).api?.pickDirectory?.({ title: 'Select backup folder' }); if (!pick?.ok || !pick?.path) return; const r = await (window as any).api?.backupRestore?.(pick.path); if (r?.ok) { success('Restore complete'); } else { error(r?.error || 'Restore failed'); } } catch { error('Restore failed'); } }} className="px-4 py-3 bg-white/10 hover:bg-white/20 border border-white/20 rounded-xl text-white">Restore</button>
                           <button onClick={async () => { try { await (window as any).api?.openBackups?.(); } catch {} }} className="px-4 py-3 bg-white/10 hover:bg-white/20 border border-white/20 rounded-xl text-white">Open Backups Folder</button>
@@ -740,6 +982,8 @@ export const SettingsTab: React.FC = () => {
                     ) : (
                       <>
                         <div className="flex justify-between"><span className="text-white/70">Binaries:</span><span className="text-white">yt-dlp {binStatus?.ytdlp ? 'OK' : 'missing'} • ffmpeg {binStatus?.ffmpeg ? 'OK' : 'missing'} • ffprobe {binStatus?.ffprobe ? 'OK' : 'missing'}</span></div>
+                        <div className="flex justify-between"><span className="text-white/70">App version:</span><span className="text-white">{updateStatus?.app?.currentVersion || '—'}{updateStatus?.app?.hasUpdate && updateStatus?.app?.latestVersion ? ` → ${updateStatus.app.latestVersion}` : ''}</span></div>
+                        <div className="flex justify-between"><span className="text-white/70">yt-dlp version:</span><span className="text-white">{updateStatus?.ytdlp?.currentVersion || (binStatus?.ytdlp ? 'detektovano' : '—')}{updateStatus?.ytdlp?.latestVersion && updateStatus?.ytdlp?.latestVersion !== updateStatus?.ytdlp?.currentVersion ? ` → ${updateStatus.ytdlp.latestVersion}` : ''}</span></div>
                         <div className="flex justify-between"><span className="text-white/70">Platform:</span><span className="text-white">Electron (IPC)</span></div>
                         <div className="flex justify-between"><span className="text-white/70">Downloads Folder:</span><button onClick={async () => { try { await (window as any).api?.openDownloads?.(); } catch {} }} className="text-blue-300 underline">Open</button></div>
                         <div className="flex justify-between"><span className="text-white/70">Jobs:</span><span className="text-white">running {ipcMetrics?.running ?? 0} / {ipcMetrics?.maxConcurrent ?? ipcSettings?.maxConcurrent ?? 3}</span></div>

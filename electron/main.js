@@ -1,13 +1,25 @@
 // Minimal Electron main to preview the app as a desktop .exe (ESM)
-import { app, BrowserWindow, ipcMain, shell, Notification, Tray, Menu, clipboard, nativeImage, dialog, powerSaveBlocker } from 'electron';
+import { app, BrowserWindow, ipcMain, shell, Notification, Tray, Menu, clipboard, nativeImage, dialog, powerSaveBlocker, session } from 'electron';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { fork, spawn } from 'node:child_process';
+import { fork, spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import chokidar from 'chokidar';
+import { randomUUID } from 'node:crypto';
 
 let serverChild = null;
 const SERVER_PORT = process.env.PORT || '5176';
+const AUTH_BASE_URL = process.env.AUTH_BASE_URL || `http://127.0.0.1:${SERVER_PORT}`;
+const AUTH_ORIGIN = new URL(AUTH_BASE_URL).origin;
+const APP_GITHUB_REPO = process.env.APP_GITHUB_REPO || 'zoxknez/pumpajvideodownloader';
+const YTDLP_GITHUB_REPO = process.env.YTDLP_GITHUB_REPO || 'yt-dlp/yt-dlp';
+let backendStarted = false;
+let mainWindow = null;
+let loginWindow = null;
+let CURRENT_USER = null;
+let postLoginTasksDone = false;
+let APP_RELEASE_CACHE = { ts: 0, data: null };
+let YTDLP_RELEASE_CACHE = { ts: 0, data: null };
 
 // __dirname in ESM
 const __filename = fileURLToPath(import.meta.url);
@@ -24,6 +36,17 @@ let TRAY_REFRESH = null;
 let TRAY_HIDE_NOTICE_SHOWN = false;
 let POWER_SAVE_ID = null;
 const QUEUE = [];
+
+function sendToRenderers(channel, payload, preferredWebContents) {
+  if (preferredWebContents && !preferredWebContents.isDestroyed?.()) {
+    try { preferredWebContents.send(channel, payload); return; } catch {}
+  }
+  try {
+    BrowserWindow.getAllWindows().forEach((w) => {
+      try { if (!w.isDestroyed()) w.webContents.send(channel, payload); } catch {}
+    });
+  } catch {}
+}
 
 // Simple desktop settings persisted in userData
 const SETTINGS_DEFAULT = {
@@ -79,6 +102,363 @@ function saveQueue() {
     fs.mkdirSync(path.dirname(QUEUE_PATH), { recursive: true });
     fs.writeFileSync(QUEUE_PATH, data);
   } catch {}
+}
+
+function parseSessionCookie(rawCookies) {
+  if (!rawCookies) return null;
+  const list = Array.isArray(rawCookies)
+    ? rawCookies
+    : typeof rawCookies === 'string'
+      ? [rawCookies]
+      : [];
+  for (const entry of list) {
+    if (!entry) continue;
+    const match = entry.match(/session=([^;]+)/);
+    if (match && match[1]) return match[1];
+  }
+  return null;
+}
+
+async function setSessionCookie(value) {
+  if (!value) return;
+  try {
+    await session.defaultSession.cookies.set({
+      url: AUTH_ORIGIN,
+      name: 'session',
+      value,
+      path: '/',
+      secure: AUTH_ORIGIN.startsWith('https://'),
+      httpOnly: true,
+    });
+  } catch (e) {
+    console.error('Failed to persist session cookie', e);
+  }
+}
+
+async function getSessionCookieValue() {
+  try {
+    const cookies = await session.defaultSession.cookies.get({ url: AUTH_ORIGIN, name: 'session' });
+    if (cookies && cookies.length > 0) return cookies[0].value;
+  } catch {}
+  return null;
+}
+
+async function clearSessionCookies() {
+  try {
+    await session.defaultSession.clearStorageData({ origin: AUTH_ORIGIN, storages: ['cookies'] });
+  } catch {}
+}
+
+async function authFetch(pathFragment, { method = 'GET', headers = {}, body = undefined } = {}) {
+  const url = new URL(pathFragment, AUTH_BASE_URL).toString();
+  const baseHeaders = {
+    Accept: 'application/json',
+    Origin: AUTH_ORIGIN,
+    Referer: `${AUTH_ORIGIN}/`,
+    'User-Agent': `PumpajDownloader/${app.getVersion?.() || 'desktop'}`,
+  };
+  if (body !== undefined) {
+    baseHeaders['Content-Type'] = 'application/json';
+  }
+  const mergedHeaders = { ...baseHeaders, ...headers };
+  const init = { method, headers: mergedHeaders, body };
+  try {
+    const res = await fetch(url, init);
+    return res;
+  } catch (e) {
+    throw new Error(`authFetch_failed: ${e?.message || e}`);
+  }
+}
+
+async function fetchWhoAmI(cookieValue) {
+  const value = cookieValue || await getSessionCookieValue();
+  if (!value) return { ok: false, status: 401, error: 'no_cookie' };
+  try {
+    const res = await authFetch('/whoami', {
+      method: 'GET',
+      headers: { Cookie: `session=${value}` },
+    });
+    if (!res.ok) {
+      const txt = await res.text().catch(() => '');
+      return { ok: false, status: res.status, error: txt || `whoami_http_${res.status}` };
+    }
+    const data = await res.json().catch(() => null);
+    return { ok: true, data };
+  } catch (e) {
+    return { ok: false, error: e?.message || String(e) };
+  }
+}
+
+function broadcastAuthState(payload) {
+  try {
+    BrowserWindow.getAllWindows().forEach((w) => {
+      try { w.webContents.send('auth:state', payload || { user: null }); } catch {}
+    });
+  } catch {}
+}
+
+function parseVersion(raw) {
+  if (!raw) return [];
+  return String(raw).replace(/^v/i, '').split('.').map((part) => Number(part.replace(/[^0-9]/g, '')) || 0);
+}
+
+function compareVersions(a, b) {
+  const av = parseVersion(a);
+  const bv = parseVersion(b);
+  const len = Math.max(av.length, bv.length);
+  for (let i = 0; i < len; i++) {
+    const diff = (av[i] || 0) - (bv[i] || 0);
+    if (diff !== 0) return diff;
+  }
+  return 0;
+}
+
+async function fetchLatestRelease(repo, { force = false } = {}) {
+  const cacheRef = repo === APP_GITHUB_REPO ? APP_RELEASE_CACHE : YTDLP_RELEASE_CACHE;
+  const now = Date.now();
+  if (!force && cacheRef.data && now - cacheRef.ts < 5 * 60_000) {
+    return cacheRef.data;
+  }
+  const url = `https://api.github.com/repos/${repo}/releases/latest`;
+  const res = await fetch(url, {
+    headers: {
+      'User-Agent': `PumpajDownloader/${app.getVersion?.() || 'dev'}`,
+      Accept: 'application/vnd.github+json',
+    },
+  });
+  if (!res.ok) {
+    throw new Error(`release_http_${res.status}`);
+  }
+  const json = await res.json();
+  const release = {
+    tag: json?.tag_name || json?.name || '',
+    version: (json?.tag_name || json?.name || '').replace(/^v/i, ''),
+    publishedAt: json?.published_at || null,
+    htmlUrl: json?.html_url || (json?.url ? String(json.url).replace('api.', '').replace('/repos', '') : ''),
+    body: json?.body || '',
+    assets: Array.isArray(json?.assets)
+      ? json.assets.map((asset) => ({
+          name: asset?.name,
+          url: asset?.browser_download_url || asset?.url,
+          size: asset?.size,
+        }))
+      : [],
+  };
+  cacheRef.ts = now;
+  cacheRef.data = release;
+  return release;
+}
+
+async function getAppUpdateInfo({ force = false } = {}) {
+  const currentVersion = app.getVersion?.() || '0.0.0';
+  let latest = null;
+  try {
+    latest = await fetchLatestRelease(APP_GITHUB_REPO, { force });
+  } catch (e) {
+    return { ok: false, error: e?.message || String(e), currentVersion };
+  }
+  const latestVersion = latest?.version || latest?.tag || null;
+  const hasUpdate = latestVersion ? compareVersions(latestVersion, currentVersion) > 0 : false;
+  return {
+    ok: true,
+    currentVersion,
+    latestVersion,
+    hasUpdate,
+    releaseNotes: latest?.body || '',
+    publishedAt: latest?.publishedAt || null,
+    url: latest?.htmlUrl || null,
+  };
+}
+
+function resolveBinariesDir() {
+  const baseRes = app.isPackaged ? (process.resourcesPath || process.cwd()) : process.cwd();
+  return path.join(baseRes, 'binaries');
+}
+
+function resolveYtDlpPath() {
+  const binDir = resolveBinariesDir();
+  return path.join(binDir, process.platform === 'win32' ? 'yt-dlp.exe' : 'yt-dlp');
+}
+
+async function getYtDlpStatus({ force = false } = {}) {
+  const ytdlpPath = resolveYtDlpPath();
+  let currentVersion = null;
+  if (fs.existsSync(ytdlpPath)) {
+    try {
+      const out = spawnSync(ytdlpPath, ['--version'], { encoding: 'utf8' });
+      if (out.status === 0) currentVersion = String(out.stdout || '').trim();
+    } catch {}
+  }
+  let release = null;
+  try {
+    release = await fetchLatestRelease(YTDLP_GITHUB_REPO, { force });
+  } catch (e) {
+    return { ok: false, error: e?.message || String(e), currentVersion };
+  }
+  const targetName = process.platform === 'win32' ? 'yt-dlp.exe' : 'yt-dlp';
+  const asset = (release?.assets || []).find((a) => String(a?.name || '').toLowerCase() === targetName.toLowerCase());
+  return {
+    ok: true,
+    currentVersion,
+    latestVersion: release?.version || release?.tag || null,
+    downloadUrl: asset?.url || release?.htmlUrl || null,
+    assetName: asset?.name || targetName,
+    releaseNotes: release?.body || '',
+    publishedAt: release?.publishedAt || null,
+  };
+}
+
+async function downloadLatestYtDlp() {
+  const status = await getYtDlpStatus({ force: true });
+  if (!status.ok) return status;
+  if (!status.downloadUrl) return { ok: false, error: 'download_url_missing' };
+  const res = await fetch(status.downloadUrl, {
+    headers: { 'User-Agent': `PumpajDownloader/${app.getVersion?.() || 'desktop'}` },
+  });
+  if (!res.ok) return { ok: false, error: `download_http_${res.status}` };
+  const arrayBuffer = await res.arrayBuffer();
+  const buffer = Buffer.from(arrayBuffer);
+  const binDir = resolveBinariesDir();
+  await fs.promises.mkdir(binDir, { recursive: true });
+  const target = resolveYtDlpPath();
+  const temp = `${target}.download`; 
+  await fs.promises.writeFile(temp, buffer);
+  try { await fs.promises.chmod(temp, 0o755); } catch {}
+  await fs.promises.rename(temp, target);
+  return { ok: true, latestVersion: status.latestVersion };
+}
+
+async function openLatestAppRelease() {
+  const status = await getAppUpdateInfo({ force: true });
+  if (status.ok && status.url) {
+    await shell.openExternal(status.url);
+    return { ok: true };
+  }
+  return { ok: false, error: status.error || 'update_info_unavailable' };
+}
+
+async function runPostLoginTasks() {
+  if (postLoginTasksDone) return;
+  postLoginTasksDone = true;
+  try { handleArgv(process.argv || []); } catch {}
+  try {
+    if (SETTINGS.resumeQueuedOnStartup) {
+      loadHistory();
+      const items = Array.isArray(HISTORY) ? [...HISTORY] : [];
+      const toResume = items.filter((x) => x && (x.status === 'queued' || x.status === 'in-progress'));
+      const existingIds = new Set(QUEUE.map((q) => q && q.id));
+      for (const it of toResume) {
+        if (existingIds.has(it.id)) continue;
+        const p = resumePayloadFromHistoryItem(it);
+        if (!p) continue;
+        try { await startDownloadEnqueueResume(p); } catch {}
+      }
+      try { drainQueue(); } catch {}
+      try { saveQueue(); } catch {}
+    }
+  } catch {}
+  try {
+    if (process.platform === 'win32') {
+      app.setUserTasks([
+        {
+          program: process.execPath,
+          arguments: '--open-downloads',
+          title: 'Open Downloads',
+          description: 'Open the Pumpaj Media Downloader folder in Downloads',
+        },
+      ]);
+    }
+  } catch {}
+}
+
+async function onAuthSuccess(user) {
+  CURRENT_USER = user || null;
+  broadcastAuthState({ user: CURRENT_USER });
+  try {
+    if (loginWindow && !loginWindow.isDestroyed()) {
+      loginWindow.close();
+    }
+  } catch {}
+  loginWindow = null;
+  if (!backendStarted) {
+    startBackend();
+    backendStarted = true;
+  }
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    mainWindow = await createWindow();
+  } else {
+    try {
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      mainWindow.show();
+      mainWindow.focus();
+    } catch {}
+  }
+  await runPostLoginTasks();
+}
+
+async function onAuthCleared() {
+  CURRENT_USER = null;
+  broadcastAuthState({ user: null });
+  try {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.close();
+    }
+  } catch {}
+  mainWindow = null;
+  await clearSessionCookies();
+  await createLoginWindow();
+}
+
+async function tryRestoreSession() {
+  const value = await getSessionCookieValue();
+  if (!value) return false;
+  const who = await fetchWhoAmI(value);
+  if (!who.ok) {
+    await clearSessionCookies();
+    return false;
+  }
+  await onAuthSuccess(who.data?.user || null);
+  return true;
+}
+
+async function createLoginWindow() {
+  if (loginWindow && !loginWindow.isDestroyed()) {
+    loginWindow.show();
+    loginWindow.focus();
+    return loginWindow;
+  }
+  loginWindow = new BrowserWindow({
+    width: 480,
+    height: 620,
+    resizable: false,
+    maximizable: false,
+    minimizable: false,
+    backgroundColor: '#0b1220',
+    autoHideMenuBar: true,
+    show: false,
+    icon: app.isPackaged ? path.join(process.resourcesPath || process.cwd(), 'public', 'pumpaj-64.png') : path.resolve(process.cwd(), 'public', 'pumpaj-64.png'),
+    webPreferences: {
+      nodeIntegration: false,
+      contextIsolation: true,
+      sandbox: true,
+      preload: path.resolve(__dirname, 'preload.cjs'),
+    },
+  });
+  loginWindow.on('ready-to-show', () => {
+    try { loginWindow?.show(); loginWindow?.focus(); } catch {}
+  });
+  loginWindow.on('closed', () => {
+    loginWindow = null;
+  });
+  const loginHtml = path.resolve(__dirname, 'login.html');
+  await loginWindow.loadFile(loginHtml);
+  return loginWindow;
+}
+
+async function initializeAuthFlow() {
+  const restored = await tryRestoreSession();
+  if (restored) return;
+  await createLoginWindow();
 }
 
 function getAggregateProgress() {
@@ -230,7 +610,7 @@ function applyClipboardWatcher(win) {
 function createTray(win) {
   try { if (TRAY) return; } catch {}
   try {
-    const iconPath = app.isPackaged ? path.join(process.resourcesPath || process.cwd(), 'public', 'icon.ico') : path.resolve(process.cwd(), 'public', 'icon.ico');
+    const iconPath = app.isPackaged ? path.join(process.resourcesPath || process.cwd(), 'public', 'pumpaj-32.png') : path.resolve(process.cwd(), 'public', 'pumpaj-32.png');
     let img = undefined;
     try { img = nativeImage.createFromPath(iconPath); } catch {}
     TRAY = new Tray(img || undefined);
@@ -433,20 +813,17 @@ function createTray(win) {
               BrowserWindow.getAllWindows().forEach((w) => { try { w.webContents.send('navigate:tab', { tab: 'download' }); } catch {} });
             }
           } catch {} } },
-        { label: 'Update yt-dlp', click: async () => { try {
-            const baseRes = app.isPackaged ? (process.resourcesPath || process.cwd()) : process.cwd();
-            const binDir = path.join(baseRes, 'binaries');
-            const YTDLP = process.platform === 'win32' ? path.join(binDir, 'yt-dlp.exe') : path.join(binDir, 'yt-dlp');
-            if (!fs.existsSync(YTDLP)) { new Notification({ title: 'yt-dlp not found', body: 'Install binaries first.' }).show(); return; }
-            const child = spawn(YTDLP, ['-U'], { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
-            let out = ''; let err = '';
-            child.stdout.on('data', (b) => { out += b.toString(); });
-            child.stderr.on('data', (b) => { err += b.toString(); });
-            child.on('close', (code) => {
-              const ok = code === 0;
-              new Notification({ title: ok ? 'yt-dlp updated' : 'yt-dlp update failed', body: ok ? (out.trim() || 'Done') : (err.trim() || 'Error') }).show();
-            });
-          } catch {} } },
+        { label: 'Download latest yt-dlp', click: async () => { try {
+            const res = await downloadLatestYtDlp();
+            if (res?.ok) {
+              const version = res?.latestVersion ? `(${res.latestVersion})` : '';
+              new Notification({ title: 'yt-dlp ažuriran', body: version ? `Nova verzija ${version}` : 'Preuzimanje završeno.' }).show();
+            } else {
+              new Notification({ title: 'yt-dlp update failed', body: res?.error || 'Operation failed.' }).show();
+            }
+          } catch (e) {
+            new Notification({ title: 'yt-dlp update failed', body: String(e?.message || e) }).show();
+          } } },
   { type: 'separator' },
   { label: 'Restart App', click: () => { try { (app).forceQuit = true; app.relaunch(); app.exit(0); } catch {} } },
   { label: 'Quit', role: 'quit' },
@@ -892,6 +1269,7 @@ function stopBackend() {
 }
 
 async function createWindow() {
+  if (mainWindow && !mainWindow.isDestroyed()) return mainWindow;
   const wb = (SETTINGS && SETTINGS.windowBounds) || null;
   const win = new BrowserWindow({
     width: (wb && Number(wb.width)) || 1280,
@@ -899,6 +1277,7 @@ async function createWindow() {
     x: (wb && typeof wb.x === 'number') ? wb.x : undefined,
     y: (wb && typeof wb.y === 'number') ? wb.y : undefined,
     backgroundColor: '#0b1220',
+    icon: app.isPackaged ? path.join(process.resourcesPath || process.cwd(), 'public', 'pumpaj-64.png') : path.resolve(process.cwd(), 'public', 'pumpaj-64.png'),
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
@@ -912,6 +1291,9 @@ async function createWindow() {
   });
 
   win.on('ready-to-show', () => { try { if (!SETTINGS.startMinimized) win.show(); } catch {} });
+  win.on('closed', () => {
+    if (mainWindow === win) mainWindow = null;
+  });
 
   // Load built frontend from dist/index.html (file://)
   await waitDistIndex().catch(() => {});
@@ -920,7 +1302,7 @@ async function createWindow() {
 
   // Dev auto-reload of dist changes
   try {
-    if (!app.isPackaged) {
+    if (!app.isPackaged && !distWatcher) {
       distWatcher = chokidar.watch(path.resolve(process.cwd(), 'dist'));
       distWatcher.on('change', () => { try { if (!win.isDestroyed()) win.reload(); } catch {} });
     }
@@ -971,6 +1353,8 @@ async function createWindow() {
       } catch {}
     });
   } catch {}
+  mainWindow = win;
+  return win;
 }
 
 app.on('ready', async () => {
@@ -989,6 +1373,64 @@ app.on('ready', async () => {
     QUEUE_PATH = path.join(app.getPath('userData'), 'queue.json');
     loadQueue();
   } catch {}
+  try {
+    session.defaultSession.webRequest.onBeforeSendHeaders((details, callback) => {
+      const headers = details.requestHeaders || {};
+      headers['x-client'] = 'electron';
+      if (!headers['x-request-id']) headers['x-request-id'] = `el-${randomUUID()}`;
+      callback({ cancel: false, requestHeaders: headers });
+    });
+  } catch {}
+  try {
+    session.defaultSession.on('will-download', (_event, item, webContents) => {
+      const total = item.getTotalBytes();
+      const start = Date.now();
+      const header = (name) => {
+        try {
+          const headers = typeof item.getResponseHeaders === 'function' ? item.getResponseHeaders() : undefined;
+          if (!headers) return undefined;
+          const lower = name.toLowerCase();
+          const entry = Object.entries(headers).find(([key]) => key.toLowerCase() === lower);
+          const value = entry?.[1];
+          if (Array.isArray(value) && value.length > 0) return value[0];
+          if (typeof value === 'string') return value;
+        } catch {}
+        return undefined;
+      };
+      const base = {
+        url: item.getURL(),
+        filename: item.getFilename(),
+        total,
+        mimeType: item.getMimeType(),
+        startTime: start,
+        requestId: header('x-request-id'),
+        proxyStatus: header('proxy-status'),
+      };
+
+      sendToRenderers('download:started', base, webContents);
+
+      item.on('updated', (_evt, state) => {
+        const received = item.getReceivedBytes();
+        sendToRenderers('download:progress', {
+          ...base,
+          state,
+          received,
+          total: item.getTotalBytes(),
+          percent: total > 0 ? Math.min(100, (received / total) * 100) : null,
+        }, webContents);
+      });
+
+      item.once('done', (_evt, state) => {
+        sendToRenderers('download:done', {
+          ...base,
+          state,
+          path: item.getSavePath(),
+          received: item.getReceivedBytes(),
+          durationMs: Date.now() - start,
+        }, webContents);
+      });
+    });
+  } catch {}
   // Notify if binaries are missing to guide the user
   try {
     const baseRes = app.isPackaged ? (process.resourcesPath || process.cwd()) : process.cwd();
@@ -1001,41 +1443,14 @@ app.on('ready', async () => {
       notif.show();
     }
   } catch {}
-  // IPC-only: do not start backend in dev or packaged
-  createWindow();
-  // Handle command-line args on first launch (URLs and commands)
-  try { handleArgv(process.argv || []); } catch {}
-  // Optionally resume queued/in-progress jobs from history
+  // Ensure bundled backend is running before auth flow (packaged builds only)
   try {
-    if (SETTINGS.resumeQueuedOnStartup) {
-      loadHistory();
-      const items = Array.isArray(HISTORY) ? [...HISTORY] : [];
-      const toResume = items.filter((x) => x && (x.status === 'queued' || x.status === 'in-progress'));
-      // Avoid duplicating items already in QUEUE.json; prefer preserving existing queued entries
-      const existingIds = new Set(QUEUE.map((q) => q && q.id));
-      for (const it of toResume) {
-        if (existingIds.has(it.id)) continue;
-        const p = resumePayloadFromHistoryItem(it);
-        if (!p) continue;
-        try { await startDownloadEnqueueResume(p); } catch {}
-      }
-      try { drainQueue(); } catch {}
-      try { saveQueue(); } catch {}
+    if (!backendStarted) {
+      startBackend();
+      backendStarted = true;
     }
   } catch {}
-  // Windows Jump List task: Open Downloads
-  try {
-    if (process.platform === 'win32') {
-      app.setUserTasks([
-        {
-          program: process.execPath,
-          arguments: '--open-downloads',
-          title: 'Open Downloads',
-          description: 'Open the Pumpaj Media Downloader folder in Downloads',
-        },
-      ]);
-    }
-  } catch {}
+  await initializeAuthFlow();
 });
 
 app.on('window-all-closed', () => {
@@ -1044,9 +1459,17 @@ app.on('window-all-closed', () => {
 
 app.on('activate', () => {
   try {
-    const wins = BrowserWindow.getAllWindows();
-    if (wins.length === 0) createWindow();
-    else { const w = wins[0]; if (w.isMinimized()) w.restore(); w.show(); w.focus(); }
+    if (CURRENT_USER) {
+      if (!mainWindow || mainWindow.isDestroyed()) {
+        createWindow();
+      } else {
+        if (mainWindow.isMinimized()) mainWindow.restore();
+        mainWindow.show();
+        mainWindow.focus();
+      }
+    } else {
+      createLoginWindow();
+    }
   } catch {}
 });
 
@@ -1150,6 +1573,92 @@ ipcMain.handle('open:history-file', async () => {
   try { if (HISTORY_PATH && fs.existsSync(HISTORY_PATH)) { const r = await shell.openPath(HISTORY_PATH); return { ok: !r, error: r || undefined }; } return { ok: false, error: 'not_found' }; } catch (e) { return { ok: false, error: String(e?.message || e) }; }
 });
 
+ipcMain.handle('auth:getBaseUrl', async () => ({ ok: true, url: AUTH_BASE_URL }));
+
+ipcMain.handle('auth:clear-session', async () => {
+  await clearSessionCookies();
+  return { ok: true };
+});
+
+ipcMain.handle('auth:whoami', async () => {
+  const res = await fetchWhoAmI();
+  if (!res.ok) return { ok: false, error: res.error || 'unauthorized', status: res.status ?? 401 };
+  return { ok: true, user: res.data?.user || null };
+});
+
+ipcMain.handle('auth:login', async (_event, payload) => {
+  try {
+    const username = String(payload?.username ?? '').trim();
+    const password = String(payload?.password ?? '');
+    if (!username || !password) return { ok: false, error: 'missing_credentials' };
+    await clearSessionCookies();
+    const res = await authFetch('/login', {
+      method: 'POST',
+      body: JSON.stringify({ username, password }),
+    });
+    const rawBody = await res.text().catch(() => '');
+    let data = null;
+    try { data = rawBody ? JSON.parse(rawBody) : null; } catch {}
+    if (!res.ok || (data && data.success === false)) {
+      const message = data?.error || data?.message || `login_failed_${res.status}`;
+      return { ok: false, error: message };
+    }
+    const setCookies = typeof res.headers.getSetCookie === 'function'
+      ? res.headers.getSetCookie()
+      : (res.headers.get('set-cookie') ? [res.headers.get('set-cookie')] : []);
+    const sessionValue = parseSessionCookie(setCookies);
+    if (!sessionValue) {
+      return { ok: false, error: 'session_cookie_missing' };
+    }
+    await setSessionCookie(sessionValue);
+    const who = await fetchWhoAmI(sessionValue);
+    if (!who.ok) {
+      await clearSessionCookies();
+      return { ok: false, error: who.error || 'whoami_failed' };
+    }
+    await onAuthSuccess(who.data?.user || null);
+    return { ok: true, user: who.data?.user || null };
+  } catch (e) {
+    return { ok: false, error: e?.message || String(e) };
+  }
+});
+
+ipcMain.handle('auth:register', async (_event, payload) => {
+  try {
+    const bodyPayload = payload && typeof payload === 'object' ? payload : {};
+    const res = await authFetch('/register', {
+      method: 'POST',
+      body: JSON.stringify(bodyPayload),
+    });
+    const rawBody = await res.text().catch(() => '');
+    let data = null;
+    try { data = rawBody ? JSON.parse(rawBody) : null; } catch {}
+    if (!res.ok || (data && data.success === false)) {
+      const message = data?.error || data?.message || `register_failed_${res.status}`;
+      return { ok: false, error: message };
+    }
+    return { ok: true, data };
+  } catch (e) {
+    return { ok: false, error: e?.message || String(e) };
+  }
+});
+
+ipcMain.handle('auth:logout', async () => {
+  try {
+    const value = await getSessionCookieValue();
+    if (value) {
+      try {
+        await authFetch('/logout', {
+          method: 'POST',
+          headers: { Cookie: `session=${value}` },
+        });
+      } catch {}
+    }
+  } catch {}
+  await onAuthCleared();
+  return { ok: true };
+});
+
 // IPC: binaries check
 ipcMain.handle('binaries:check', async () => {
   try {
@@ -1172,6 +1681,43 @@ ipcMain.handle('binaries:check', async () => {
   }
 });
 
+ipcMain.handle('updates:get-status', async () => {
+  try {
+    const appInfo = await getAppUpdateInfo();
+    const ytdlpInfo = await getYtDlpStatus();
+    return { ok: true, data: { app: appInfo, ytdlp: ytdlpInfo } };
+  } catch (e) {
+    return { ok: false, error: String(e?.message || e) };
+  }
+});
+
+ipcMain.handle('updates:check-app', async () => {
+  try {
+    return await getAppUpdateInfo({ force: true });
+  } catch (e) {
+    return { ok: false, error: String(e?.message || e) };
+  }
+});
+
+ipcMain.handle('updates:open-app-release', async () => {
+  try {
+    return await openLatestAppRelease();
+  } catch (e) {
+    return { ok: false, error: String(e?.message || e) };
+  }
+});
+
+ipcMain.handle('updates:update-ytdlp', async () => {
+  try {
+    const result = await downloadLatestYtDlp();
+    if (!result?.ok) return result;
+    const refreshed = await getYtDlpStatus();
+    return { ok: true, latestVersion: result.latestVersion, status: refreshed };
+  } catch (e) {
+    return { ok: false, error: String(e?.message || e) };
+  }
+});
+
 // IPC: get common paths for renderer convenience
 ipcMain.handle('paths:get', async () => {
   try {
@@ -1182,27 +1728,6 @@ ipcMain.handle('paths:get', async () => {
     const backups = path.join(downloadsMediaRoot, 'Backups');
     const userData = app.getPath('userData');
     return { ok: true, data: { binDir, downloads, downloadsMediaRoot, backups, userData } };
-  } catch (e) { return { ok: false, error: String(e?.message || e) }; }
-});
-
-// IPC: yt-dlp self update
-ipcMain.handle('binaries:update', async () => {
-  try {
-    const baseRes = app.isPackaged ? (process.resourcesPath || process.cwd()) : process.cwd();
-    const binDir = path.join(baseRes, 'binaries');
-    const YTDLP = process.platform === 'win32' ? path.join(binDir, 'yt-dlp.exe') : path.join(binDir, 'yt-dlp');
-    if (!fs.existsSync(YTDLP)) return { ok: false, error: 'ytdlp_missing' };
-    return await new Promise((resolve) => {
-      try {
-        const child = spawn(YTDLP, ['-U'], { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
-        let out = ''; let err = '';
-        child.stdout.on('data', (b) => { out += b.toString(); });
-        child.stderr.on('data', (b) => { err += b.toString(); });
-        child.on('close', (code) => {
-          resolve({ ok: code === 0, output: out.trim(), error: code === 0 ? undefined : (err || 'update_failed') });
-        });
-      } catch (e) { resolve({ ok: false, error: String(e?.message || e) }); }
-    });
   } catch (e) { return { ok: false, error: String(e?.message || e) }; }
 });
 

@@ -11,7 +11,7 @@ import { PolicyBadge } from './components/PolicyBadge';
 import { API_BASE, analyzeUrl, getJobsSettings, authHeaders } from './lib/api';
 import { getDefaultDirHandle } from './lib/fsStore';
 import { Download, Search, Clipboard, Trash2, Sparkles, Settings, Monitor, History as HistoryIcon, Clock, Heart } from 'lucide-react';
-const pumpajLogo = '/pumpaj-logo.svg';
+const pumpajLogo = '/pumpaj-180.png?v=2';
 import { QueueTab } from './components/QueueTab';
 
 type MainTab = 'download' | 'queue' | 'history' | 'batch' | 'settings';
@@ -30,7 +30,6 @@ function App() {
   const [binStatus, setBinStatus] = useState<{ ytdlp: boolean; ffmpeg: boolean; ffprobe: boolean } | null>(null);
   const handleAnalyzeRef = useRef<() => void>(() => {});
   const urlInputRef = useRef<HTMLInputElement | null>(null);
-  const [ipcPaused, setIpcPaused] = useState<boolean>(false);
   const apiBase = API_BASE || 'http://127.0.0.1:5176';
   // Detect Electron IPC mode (desktop build exposes window.api in preload)
   const isIpc = typeof window !== 'undefined' && Boolean((window as any).api?.analyze || (window as any).api?.start);
@@ -50,17 +49,6 @@ function App() {
     if (!isIpc) return;
     let off: any;
     try { off = (window as any).api?._onNavigateTab?.(); } catch {}
-    return () => { try { off?.(); } catch {} };
-  }, [isIpc]);
-
-  // Desktop: reflect pauseNewJobs from settings
-  useEffect(() => {
-    if (!isIpc) return;
-    let off: any;
-    (async () => {
-      try { const r = await (window as any).api?.getSettings?.(); if (r?.ok && r?.data) setIpcPaused(!!r.data.pauseNewJobs); } catch {}
-      try { off = (window as any).api?.onSettingsChanged?.((s: any) => { try { setIpcPaused(!!s?.pauseNewJobs); } catch {} }); } catch {}
-    })();
     return () => { try { off?.(); } catch {} };
   }, [isIpc]);
 
@@ -352,26 +340,15 @@ function App() {
           {/* Header */}
           <div className="text-center mb-8">
           <div className="flex items-center justify-center gap-3 mb-4 overflow-visible">
-            <div className="p-3 rounded-2xl bg-gradient-to-br from-blue-500 to-purple-600 shadow-lg shadow-blue-500/25">
-              <img src={pumpajLogo} alt="Pumpaj logo" className="w-12 h-12 object-contain" />
-            </div>
+            <img src={pumpajLogo} alt="Pumpaj logo" className="w-32 h-32 object-contain" />
             <div className="flex items-center gap-2 flex-wrap">
               <h1 className="text-4xl leading-[1.2] font-bold bg-gradient-to-r from-blue-400 to-purple-400 bg-clip-text text-transparent pr-1">Pumpaj Media Downloader</h1>
               <Sparkles className="w-6 h-6 text-yellow-400 attention-icon icon-glow glow-amber" />
               <a
-                href="https://x.com/KoronVirus"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="text-base px-3.5 py-2 rounded-full border border-purple-500/40 bg-purple-500/15 text-purple-100 font-semibold hover:bg-purple-500/25 transition-colors"
-                title="Author: o0o0o0o"
-              >
-                Author · o0o0o0o
-              </a>
-              <a
                 href="https://www.paypal.com/paypalme/o0o0o0o0o0o0o"
                 target="_blank"
                 rel="noopener noreferrer"
-                className="text-base px-3.5 py-2 rounded-full border border-amber-500/40 bg-amber-500/15 text-amber-100 font-semibold hover:bg-amber-500/25 transition-colors flex items-center gap-2"
+                className="text-lg px-6 py-3 rounded-full border-2 border-amber-500/60 bg-amber-500/20 text-amber-100 font-bold hover:bg-amber-500/30 hover:border-amber-500/80 transition-all duration-300 flex items-center gap-2 shadow-lg"
                 title="Donate via PayPal"
               >
                 <Heart className="w-6 h-6" />
@@ -394,22 +371,14 @@ function App() {
                 >
                   Open Downloads
                 </button>
-                <button
-                  onClick={async () => { try { const r = await (window as any).api?.getSettings?.(); if (r?.ok) { const next = !r.data.pauseNewJobs; await (window as any).api?.setSettings?.({ pauseNewJobs: next }); setIpcPaused(next); } } catch {} }}
-                  className={`text-sm px-3 py-1.5 rounded-full border ${ipcPaused ? 'text-yellow-300 border-yellow-500/30 bg-yellow-500/10 hover:bg-yellow-500/20' : 'text-emerald-300 border-emerald-500/30 bg-emerald-500/10 hover:bg-emerald-500/20'} ml-2`}
-                >
-                  {ipcPaused ? 'Resume new jobs' : 'Pause new jobs'}
-                </button>
-        {jobsMetrics && (
-                  <span className="text-sm px-3 py-1.5 rounded-full border text-blue-300 border-blue-500/30 bg-blue-500/10">
-          Queue: {jobsMetrics.running} running / max {jobsMetrics.maxConcurrent ?? '—'}, {jobsMetrics.queued} queued{typeof jobsMetrics.aggregatePercent === 'number' ? ` • ${Math.max(0, Math.min(100, jobsMetrics.aggregatePercent))}%` : ''}
-                  </span>
-                )}
+                <span className="text-sm px-3 py-1.5 rounded-full border text-emerald-300 border-emerald-500/30 bg-emerald-500/10">
+                  System Ready • Downloader Active
+                </span>
                 </>
               )}
-              {!isIpc && jobsMetrics && (
-                <span className="text-sm px-3 py-1.5 rounded-full border text-blue-300 border-blue-500/30 bg-blue-500/10">
-                  Queue: {jobsMetrics.running} running / max {jobsMetrics.maxConcurrent ?? '—'}, {jobsMetrics.queued} queued
+              {!isIpc && (
+                <span className="text-sm px-3 py-1.5 rounded-full border text-emerald-300 border-emerald-500/30 bg-emerald-500/10">
+                  System Ready • Downloader Active
                 </span>
               )}
               {!isIpc && serverNet && (
@@ -495,22 +464,15 @@ function App() {
                   )}
                 </div>
                 <button
-                  onClick={handlePaste}
-                  className="px-6 py-4 bg-white/5 hover:bg-white/10 border border-white/10 rounded-xl transition-all duration-300 text-slate-200 hover:shadow-lg active:scale-95"
-                >
-                  <Clipboard className="w-5 h-5" />
-                </button>
-                <button
-                  onClick={async () => { try { await (window as any).api?.setSettings?.({ pauseNewJobs: !ipcPaused }); } catch {} }}
-                  className={`ml-2 text-xs px-2 py-1 rounded-full border ${ipcPaused ? 'text-yellow-300 border-yellow-500/30 bg-yellow-500/10 hover:bg-yellow-500/20' : 'text-emerald-300 border-emerald-500/30 bg-emerald-500/10 hover:bg-emerald-500/20'}`}
-                  title="Toggle pause new jobs"
-                >
-                  {ipcPaused ? 'Resume new jobs' : 'Pause new jobs'}
-                </button>
-                <button
                   onClick={handleAnalyze}
                   disabled={!url.trim() || isAnalyzing}
-                  className="px-8 py-4 bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-500 hover:to-purple-500 disabled:from-slate-600 disabled:to-slate-600 text-white font-semibold rounded-xl transition-all duration-300 shadow-lg hover:shadow-xl disabled:cursor-not-allowed active:scale-95 min-w-[120px] flex items-center justify-center gap-2"
+                  className={`px-8 py-4 font-semibold rounded-xl transition-all duration-300 shadow-lg hover:shadow-xl disabled:cursor-not-allowed active:scale-95 min-w-[120px] flex items-center justify-center gap-2 ${
+                    isAnalyzing 
+                      ? 'bg-gradient-to-r from-slate-600 to-slate-600 text-slate-400' 
+                      : isAnalyzed 
+                        ? 'bg-gradient-to-r from-green-600 to-emerald-600 hover:from-green-500 hover:to-emerald-500 text-white' 
+                        : 'bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-500 hover:to-purple-500 text-white'
+                  }`}
                 >
                   {isAnalyzing ? (
                     <>
@@ -523,6 +485,12 @@ function App() {
                       Analyze
                     </>
                   )}
+                </button>
+                <button
+                  onClick={handlePaste}
+                  className="px-6 py-4 bg-white/5 hover:bg-white/10 border border-white/10 rounded-xl transition-all duration-300 text-slate-200 hover:shadow-lg active:scale-95"
+                >
+                  <Clipboard className="w-5 h-5" />
                 </button>
               </div>
               {errorMsg && (

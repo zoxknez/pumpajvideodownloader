@@ -5,6 +5,7 @@ export type AppConfig = {
   maxFileSizeMb?: number; // --max-filesize
   maxDurationSec?: number; // --match-filter "duration <= N"
   proxyDownloadMaxPerMin?: number; // per-route limiter for /api/proxy-download
+  minFreeDiskMb?: number; // minimum free disk (MB) before rejecting new jobs
 };
 import { readServerSettings } from './settings.js';
 
@@ -36,6 +37,13 @@ export function loadConfig(): AppConfig {
   const maxFileSizeMb = Number(process.env.MAX_FILESIZE_MB || '');
   const maxDurationSec = Number(process.env.MAX_DURATION_SEC || '');
   const proxyDownloadMaxPerMin = Number(process.env.PROXY_DOWNLOAD_MAX_PER_MIN || '');
+  const minFreeDiskMbRaw = process.env.MIN_FREE_DISK_MB;
+  const minFreeDiskMb = Number(minFreeDiskMbRaw ?? '');
+  const resolvedMinFree = (() => {
+    if (minFreeDiskMbRaw === undefined) return 200;
+    if (Number.isFinite(minFreeDiskMb) && minFreeDiskMb >= 0) return Math.floor(minFreeDiskMb);
+    return 200;
+  })();
   return {
     port: Number.isFinite(port) ? port : 5176,
     corsOrigin,
@@ -43,5 +51,6 @@ export function loadConfig(): AppConfig {
     maxFileSizeMb: Number.isFinite(maxFileSizeMb) && maxFileSizeMb > 0 ? Math.floor(maxFileSizeMb) : undefined,
     maxDurationSec: Number.isFinite(maxDurationSec) && maxDurationSec > 0 ? Math.floor(maxDurationSec) : undefined,
     proxyDownloadMaxPerMin: Number.isFinite(proxyDownloadMaxPerMin) && proxyDownloadMaxPerMin > 0 ? Math.floor(proxyDownloadMaxPerMin) : undefined,
+    minFreeDiskMb: resolvedMinFree > 0 ? resolvedMinFree : undefined,
   };
 }

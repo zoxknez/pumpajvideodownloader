@@ -1,3 +1,6 @@
+import { captureProxyError } from '../telemetry/sentry';
+import { pooledAbort, endPooled } from './downloadPool';
+
 export type AnalyzeResponse = {
   title?: string;
   uploader?: string;
@@ -124,6 +127,137 @@ export async function analyzeUrl(url: string): Promise<AnalyzeResponse> {
 
 // Download helper: accepts either a direct URL or goes through backend proxy.
 export type DownloadProgress = { loaded: number; total?: number; pct?: number; speed?: string; eta?: string };
+
+export type ProxyDownloadErrorCode =
+  | 'UPSTREAM_SIZE_LIMIT'
+  | 'UPSTREAM_RATELIMIT'
+  | 'SIZE_LIMIT'
+  | 'SSRF_FORBIDDEN'
+  | 'INVALID_URL'
+  | 'MISSING_URL'
+  | 'HTTP_416'
+  | 'HTTP_502'
+  | 'NETWORK'
+  | 'UNKNOWN';
+
+export class ProxyDownloadError extends Error {
+  status?: number;
+  code: ProxyDownloadErrorCode;
+  retryAfter?: number;
+  requestId?: string;
+  proxyStatus?: string;
+  constructor(message: string, init: { status?: number; code?: ProxyDownloadErrorCode; retryAfter?: number; requestId?: string; proxyStatus?: string } = {}) {
+    super(message);
+    this.name = 'ProxyDownloadError';
+    this.status = init.status;
+    this.code = init.code ?? 'UNKNOWN';
+    this.retryAfter = init.retryAfter;
+    this.requestId = init.requestId;
+    this.proxyStatus = init.proxyStatus;
+  }
+}
+
+function parseRetryAfter(header?: string | null): number | undefined {
+  if (!header) return undefined;
+  const numeric = Number(header);
+  if (Number.isFinite(numeric)) return Math.max(0, Math.ceil(numeric));
+  const parsed = Date.parse(header);
+  if (!Number.isNaN(parsed)) {
+    const delta = Math.ceil((parsed - Date.now()) / 1000);
+    return delta > 0 ? delta : 0;
+  }
+  return undefined;
+}
+
+function normalizeProxyErrorCode(raw?: string | null): ProxyDownloadErrorCode {
+  switch (raw) {
+    case 'UPSTREAM_RATELIMIT':
+      return 'UPSTREAM_RATELIMIT';
+    case 'UPSTREAM_SIZE_LIMIT':
+    case 'SIZE_LIMIT':
+      return 'UPSTREAM_SIZE_LIMIT';
+    case 'SSRF_FORBIDDEN':
+      return 'SSRF_FORBIDDEN';
+    case 'INVALID_URL':
+      return 'INVALID_URL';
+    case 'MISSING_URL':
+      return 'MISSING_URL';
+    case 'NETWORK':
+      return 'NETWORK';
+    case 'HTTP_416':
+      return 'HTTP_416';
+    case 'HTTP_502':
+      return 'HTTP_502';
+    default:
+      return 'UNKNOWN';
+  }
+}
+
+async function buildProxyDownloadError(res: Response): Promise<ProxyDownloadError> {
+  const ct = res.headers.get('content-type') || '';
+  let rawCode: string | undefined;
+  if (ct.includes('application/json')) {
+    try {
+      const data = await res.json();
+      if (data) {
+        if (typeof data.code === 'string') rawCode = data.code;
+        else if (typeof data.error === 'string') rawCode = data.error;
+      }
+    } catch {
+      // ignore
+    }
+  } else {
+    try {
+      await res.text();
+    } catch {}
+  }
+
+  const retryAfter = parseRetryAfter(res.headers.get('retry-after'));
+  let code = normalizeProxyErrorCode(rawCode);
+  if (code === 'UNKNOWN') {
+    if (res.status === 416) code = 'HTTP_416';
+    else if (res.status === 502) code = 'HTTP_502';
+  }
+  let message: string;
+  switch (code) {
+    case 'UPSTREAM_RATELIMIT':
+      message = retryAfter
+        ? `Upstream rate limit reached. Please retry in ${retryAfter}s.`
+        : 'Upstream rate limit reached. Please retry shortly.';
+      break;
+    case 'UPSTREAM_SIZE_LIMIT':
+      message = 'Upstream size limit exceeded.';
+      break;
+    case 'SSRF_FORBIDDEN':
+      message = 'The requested URL is blocked by the security policy.';
+      break;
+    case 'INVALID_URL':
+      message = 'The provided URL is not allowed for proxy download.';
+      break;
+    case 'MISSING_URL':
+      message = 'Missing download URL.';
+      break;
+    case 'HTTP_416':
+      message = 'Requested range not satisfiable (416).';
+      break;
+    case 'HTTP_502':
+      message = 'Proxy upstream error (502).';
+      break;
+    case 'NETWORK':
+      message = 'Network error while streaming download.';
+      break;
+    default:
+      message = `Proxy download failed (${res.status}).`;
+  }
+
+  return new ProxyDownloadError(message, {
+    status: res.status,
+    code,
+    retryAfter,
+    requestId: res.headers.get('x-request-id') || undefined,
+    proxyStatus: res.headers.get('proxy-status') || undefined,
+  });
+}
 export async function proxyDownload(
   input: { url?: string; filename: string; id?: string; onProgress?: (p: DownloadProgress) => void; signal?: AbortSignal } | string,
   filename?: string
@@ -145,14 +279,15 @@ export async function proxyDownload(
   // New-tab preference disabled in desktop app mode
 
   try {
-    // Do NOT use the 20s timeout for large binary downloads
-  const res = await fetch(u.toString(), { signal: externalSignal, headers: authHeaders() });
-    if (!res.ok) throw new Error(`Proxy download failed (${res.status})`);
+    const res = await fetch(u.toString(), { signal: externalSignal, headers: authHeaders() });
+    if (!res.ok) {
+      throw await buildProxyDownloadError(res);
+    }
     await saveResponseAsFile(res, name, onProgress, externalSignal);
-  } catch (e: any) {
-    if (e?.name === 'AbortError') return; // silent on cancel
-    console.error('Proxy download failed', e);
-    alert('Download failed. Please try again.');
+  } catch (err: any) {
+    if (err?.name === 'AbortError') throw err;
+    if (err instanceof ProxyDownloadError) throw err;
+    throw new ProxyDownloadError('Proxy download failed. Please check your connection and try again.', { code: 'NETWORK' });
   }
 }
 
@@ -282,21 +417,61 @@ export async function saveResponseAsFile(
   URL.revokeObjectURL(url);
 }
 
-// Force-download any API-served file by fetching as blob and saving via anchor
-async function downloadUrlAsFile(url: string, fallbackName = 'download'): Promise<void> {
-  // No timeout for large binary downloads
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`Download failed (${res.status})`);
-  await saveResponseAsFile(res, fallbackName);
-}
-
 export async function downloadJobFile(id: string, fallbackName?: string): Promise<boolean> {
-  try {
   const url = jobFileUrl(id);
-  await downloadUrlAsFile(url, fallbackName);
+  const headers = authHeaders();
+  const signal = pooledAbort(id);
+  try {
+    let headRes: Response | null = null;
+    try {
+      headRes = await fetch(url, { method: 'HEAD', cache: 'no-store', headers, signal });
+    } catch {
+      // Ignore network failures on HEAD and fall back to GET below
+    }
+
+    if (headRes && !headRes.ok && headRes.status !== 405 && headRes.status !== 501) {
+      if (headRes.status === 502) {
+        captureProxyError(headRes, { route: 'job-file.head', jobId: id });
+      }
+      throw await buildProxyDownloadError(headRes.clone());
+    }
+
+    let res: Response;
+    try {
+      res = await fetch(url, { method: 'GET', cache: 'no-store', headers, signal });
+    } catch {
+      throw new ProxyDownloadError('Proxy download failed. Please check your connection and try again.', {
+        code: 'NETWORK',
+      });
+    }
+
+    if (res.status === 416) {
+      throw new ProxyDownloadError('Requested range not satisfiable (416). Try restarting the download.', {
+        status: res.status,
+        code: 'HTTP_416',
+        requestId: res.headers.get('x-request-id') || undefined,
+        proxyStatus: res.headers.get('proxy-status') || undefined,
+      });
+    }
+
+    if (!res.ok) {
+      if (res.status === 502) {
+        captureProxyError(res, {
+          route: 'job-file',
+          jobId: id,
+          headStatus: headRes?.status,
+          headContentLength: headRes?.headers.get('content-length') || undefined,
+          headEtag: headRes?.headers.get('etag') || undefined,
+        });
+      }
+      const err = await buildProxyDownloadError(res.clone());
+      throw err;
+    }
+
+    await saveResponseAsFile(res, fallbackName || `job-${id}`, undefined, signal);
     return true;
-  } catch {
-    return false;
+  } finally {
+    endPooled(id);
   }
 }
 
@@ -476,7 +651,11 @@ export async function startBestJob(sourceUrl: string, title: string) {
     throw new Error(text || `Failed to start job (${res.status})`);
   }
   const data = await res.json();
-  return String(data?.id || '');
+  const id = String(data?.id || '');
+  if (id && typeof window !== 'undefined') {
+    try { window.dispatchEvent(new CustomEvent('navigate-main-tab', { detail: 'history' })); } catch {}
+  }
+  return id;
 }
 
 export async function startAudioJob(sourceUrl: string, title: string, format: 'm4a' | 'mp3' = 'm4a') {
@@ -491,7 +670,11 @@ export async function startAudioJob(sourceUrl: string, title: string, format: 'm
     throw new Error(text || `Failed to start audio job (${res.status})`);
   }
   const data = await res.json();
-  return String(data?.id || '');
+  const id = String(data?.id || '');
+  if (id && typeof window !== 'undefined') {
+    try { window.dispatchEvent(new CustomEvent('navigate-main-tab', { detail: 'history' })); } catch {}
+  }
+  return id;
 }
 
 export async function cancelJob(id: string) {
@@ -531,46 +714,112 @@ export async function isJobFileReady(id: string): Promise<boolean> {
   }
 }
 
-export function subscribeJobProgress(id: string, onData: (p: { progress?: number; stage?: string; speed?: string; eta?: string }) => void, onEnd?: (status: string) => void) {
+type ProgressSsePayload = {
+  progress?: number;
+  stage?: string;
+  speed?: string;
+  eta?: string;
+  status?: string;
+  [key: string]: any;
+};
+
+type ProgressSseOptions = {
+  id: string;
+  signal?: AbortSignal;
+  onData?: (payload: ProgressSsePayload) => void;
+  onEnd?: (status: string, payload?: ProgressSsePayload) => void;
+  onError?: (info: { message: string; retryIn?: number }) => void;
+};
+
+export function connectProgressSSE(options: ProgressSseOptions) {
   const tok = (typeof localStorage !== 'undefined') ? encodeURIComponent(localStorage.getItem('app:token') || '') : '';
-  const url = `${API_BASE}/api/progress/${encodeURIComponent(id)}${tok ? `?token=${tok}` : ''}`;
+  const url = `${API_BASE}/api/progress/${encodeURIComponent(options.id)}${tok ? `?token=${tok}` : ''}`;
   let es: EventSource | null = null;
   let backoff = 1000;
   let stopped = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const cleanup = () => {
+    if (timer) { clearTimeout(timer); timer = undefined; }
+    if (es) {
+      try { es.close(); } catch {}
+      es = null;
+    }
+  };
   const open = () => {
     if (stopped) return;
+    cleanup();
     es = new EventSource(url);
     es.onopen = () => { backoff = 1000; };
     es.onmessage = (ev) => {
       try {
         const msg = JSON.parse(ev.data || '{}');
-        onData?.({
-          progress: typeof msg.progress === 'number' ? msg.progress : undefined,
-          stage: msg.stage,
-          speed: msg.speed,
-          eta: msg.eta,
-        });
+        if (typeof msg.retry === 'number' && Number.isFinite(msg.retry) && msg.retry > 0) {
+          backoff = Math.min(Math.max(msg.retry, 500), 60000);
+        }
+        options.onData?.(msg);
       } catch {}
     };
     const onEndEvt = (ev: any) => {
       try {
         const msg = JSON.parse(ev?.data || '{}');
-        onEnd?.(String(msg?.status || 'completed'));
-      } catch { onEnd?.('completed'); }
+        options.onEnd?.(String(msg?.status || 'completed'), msg);
+      } catch {
+        options.onEnd?.('completed');
+      }
       stopped = true; // don't reconnect after end
-      try { es?.close(); } catch {}
+      cleanup();
     };
     es.addEventListener('end', onEndEvt as any);
+    es.addEventListener('ping', () => {});
+    es.addEventListener('retry', (ev: any) => {
+      const raw = typeof ev?.data === 'string' ? Number(ev.data) : typeof ev?.data === 'number' ? ev.data : undefined;
+      if (typeof raw === 'number' && Number.isFinite(raw) && raw > 0) {
+        backoff = Math.min(Math.max(raw, 500), 60000);
+      }
+    });
     es.onerror = () => {
-      try { es?.close(); } catch {}
+      cleanup();
       if (!stopped) {
-        setTimeout(open, backoff);
+        options.onError?.({ message: 'Progress stream disconnected. Retrying…', retryIn: Math.round(backoff / 1000) });
+        timer = setTimeout(open, backoff);
         backoff = Math.min(backoff * 2, 30000);
       }
     };
   };
+  if (options.signal?.aborted) {
+    stopped = true;
+    cleanup();
+    return { close: () => {} };
+  }
   open();
-  return { close: () => { stopped = true; try { es?.close(); } catch {} } };
+  if (options.signal) {
+    options.signal.addEventListener('abort', () => {
+      stopped = true;
+      cleanup();
+    }, { once: true });
+  }
+  return { close: () => { stopped = true; cleanup(); } };
+}
+
+export function subscribeJobProgress(id: string, onData: (p: { progress?: number; stage?: string; speed?: string; eta?: string }) => void, onEnd?: (status: string) => void) {
+  const sub = connectProgressSSE({
+    id,
+    onData: (payload) => {
+      onData?.({
+        progress: typeof payload.progress === 'number' ? payload.progress : undefined,
+        stage: typeof payload.stage === 'string' ? payload.stage : undefined,
+        speed: typeof payload.speed === 'string' ? payload.speed : undefined,
+        eta: typeof payload.eta === 'string' ? payload.eta : undefined,
+      });
+    },
+    onEnd: (status) => { onEnd?.(status); },
+    onError: (info) => {
+      if (info?.message) {
+        console.debug(info.message, info.retryIn ? `(retry in ${info.retryIn}s)` : '');
+      }
+    },
+  });
+  return { close: () => { sub.close(); } };
 }
 
 // Jobs settings (server-side)

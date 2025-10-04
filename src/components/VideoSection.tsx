@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { DownloadCard } from './DownloadCard';
 import { Video, Crown, Zap, Shield, Play } from 'lucide-react';
-import { cancelJob, downloadJobFile, isJobFileReady, resolveFormatUrl, proxyDownload, startBestJob, subscribeJobProgress, jobFileUrl } from '../lib/api';
+import { cancelJob, downloadJobFile, isJobFileReady, resolveFormatUrl, proxyDownload, startBestJob, subscribeJobProgress, jobFileUrl, ProxyDownloadError } from '../lib/api';
 import { ipcAvailable, startIpcAdvanced, onProgressIpc, onDoneIpc, revealPath, openPath } from '../lib/downloader';
 import { openPremiumUpgrade } from '../lib/premium';
 import { useToast } from './ToastProvider';
@@ -238,12 +238,18 @@ export const VideoSection: React.FC<VideoSectionProps> = ({ analysisData, onForm
         async (status) => {
           if (status === 'completed') {
             try {
-              const ok = await downloadJobFile(id);
-              if (!ok) {
-                // As a last resort, open the file URL directly to trigger browser download
-                try { window.location.href = jobFileUrl(id); } catch {}
+              await downloadJobFile(id);
+            } catch (err: any) {
+              if (err instanceof ProxyDownloadError) {
+                const meta: string[] = [];
+                if (err.proxyStatus) meta.push(`Proxy-Status: ${err.proxyStatus}`);
+                if (err.requestId) meta.push(`Request ID: ${err.requestId}`);
+                const hint = meta.length ? `Prijavi ovaj kod: ${meta.join(' | ')}` : '';
+                toastError(hint ? `${err.message} ${hint}` : err.message);
+              } else if (err?.name !== 'AbortError') {
+                toastError('Download failed. Please try again.');
               }
-            } catch {
+              // As a last resort, open the file URL directly to trigger browser download
               try { window.location.href = jobFileUrl(id); } catch {}
             }
           }
@@ -261,10 +267,15 @@ export const VideoSection: React.FC<VideoSectionProps> = ({ analysisData, onForm
         }
         if (url) {
           const ext = String(fmt?.format || 'mp4').toLowerCase();
-          const fname = `${analysisData.videoTitle || 'video'}_${fmt?.quality || 'best'}.${ext}`.replace(/[^\w.-]+/g, '_');
+          const safeTitle = (analysisData.videoTitle || 'video').replace(/[^\w.-]+/g, '_') || 'video';
+          const fname = `${safeTitle}_${fmt?.quality || 'best'}.${ext}`;
           await proxyDownload({ url, filename: fname });
         }
-      } catch {}
+      } catch (err: any) {
+        if (err?.name === 'AbortError') return;
+        const msg = err instanceof ProxyDownloadError ? err.message : 'Download failed. Please try again.';
+        toastError(msg);
+      }
     }
   };
 
@@ -477,20 +488,24 @@ export const VideoSection: React.FC<VideoSectionProps> = ({ analysisData, onForm
           if (url) {
             info('Server merge slow, falling back to direct download…');
             const ext = String((fmt as any)?.format || 'mp4').toLowerCase();
-            const fname = `${data.videoTitle || 'video'}_${(fmt as any)?.quality || 'best'}.${ext}`.replace(/[^\w.-]+/g, '_');
+            const safeTitle = (data.videoTitle || 'video').replace(/[^\w.-]+/g, '_') || 'video';
+            const fname = `${safeTitle}_${(fmt as any)?.quality || 'best'}.${ext}`;
             await proxyDownload({ url, filename: fname });
             try { if (jobId) await cancelJob(jobId); } catch {}
             setTimeout(() => { setJobId(null); setJobProgress(0); setJobStage(''); }, 500);
           } else {
             directFallbackRef.current = false; // keep trying later
           }
-        } catch {
+        } catch (err: any) {
           directFallbackRef.current = false;
+          if (err?.name === 'AbortError') return;
+          const msg = err instanceof ProxyDownloadError ? err.message : 'Direct download fallback failed.';
+          toastError(msg);
         }
       }
     }, 1500);
     return () => clearInterval(tick);
-  }, [analysisData, jobId, selectedFormat, jobProgress, info]);
+  }, [analysisData, jobId, selectedFormat, jobProgress, info, toastError]);
 
   // Render Phase 2 if present, otherwise Phase 1 default UI (no analysis yet)
   // Cleanup progress subscription on unmount

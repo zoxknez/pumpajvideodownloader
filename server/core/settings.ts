@@ -49,7 +49,9 @@ export function writeServerSettings(s: ServerSettings) {
     if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
     const cur = readServerSettings();
     const next = { ...cur, ...s };
-    fs.writeFileSync(file, JSON.stringify(next, null, 2), 'utf-8');
+    const tmp = `${file}.tmp`;
+    fs.writeFileSync(tmp, JSON.stringify(next, null, 2), 'utf-8');
+    fs.renameSync(tmp, file);
   } catch {
     // ignore
   }

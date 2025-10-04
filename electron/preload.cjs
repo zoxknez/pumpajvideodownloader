@@ -15,6 +15,21 @@ contextBridge.exposeInMainWorld('api', {
     ipcRenderer.on('dl-done', h);
     return () => ipcRenderer.removeListener('dl-done', h);
   },
+  onBrowserDownloadStart: (cb) => {
+    const h = (_e, payload) => cb(payload);
+    ipcRenderer.on('download:started', h);
+    return () => ipcRenderer.removeListener('download:started', h);
+  },
+  onBrowserDownloadProgress: (cb) => {
+    const h = (_e, payload) => cb(payload);
+    ipcRenderer.on('download:progress', h);
+    return () => ipcRenderer.removeListener('download:progress', h);
+  },
+  onBrowserDownloadDone: (cb) => {
+    const h = (_e, payload) => cb(payload);
+    ipcRenderer.on('download:done', h);
+    return () => ipcRenderer.removeListener('download:done', h);
+  },
   getSettings: () => ipcRenderer.invoke('settings:get'),
   setSettings: (partial) => ipcRenderer.invoke('settings:set', partial),
   onSettingsChanged: (cb) => {
@@ -24,7 +39,6 @@ contextBridge.exposeInMainWorld('api', {
   },
   openDownloads: () => ipcRenderer.invoke('open-downloads'),
   checkBinaries: () => ipcRenderer.invoke('binaries:check'),
-  updateBinaries: () => ipcRenderer.invoke('binaries:update'),
   historyList: () => ipcRenderer.invoke('history:list'),
   historyClear: () => ipcRenderer.invoke('history:clear'),
   historyRemove: (id) => ipcRenderer.invoke('history:remove', id),
@@ -61,6 +75,27 @@ contextBridge.exposeInMainWorld('api', {
   getPaths: () => ipcRenderer.invoke('paths:get'),
   openSettingsFile: () => ipcRenderer.invoke('open:settings-file'),
   openHistoryFile: () => ipcRenderer.invoke('open:history-file'),
+  updates: {
+    getStatus: () => ipcRenderer.invoke('updates:get-status'),
+    checkApp: () => ipcRenderer.invoke('updates:check-app'),
+    openLatestRelease: () => ipcRenderer.invoke('updates:open-app-release'),
+    updateYtDlp: () => ipcRenderer.invoke('updates:update-ytdlp'),
+  },
+  auth: {
+    baseUrl: () => ipcRenderer.invoke('auth:getBaseUrl'),
+    login: (payload) => ipcRenderer.invoke('auth:login', payload),
+    register: (payload) => ipcRenderer.invoke('auth:register', payload),
+    logout: () => ipcRenderer.invoke('auth:logout'),
+    whoami: () => ipcRenderer.invoke('auth:whoami'),
+    clearSession: () => ipcRenderer.invoke('auth:clear-session'),
+    onState: (cb) => {
+      const handler = (_event, payload) => {
+        try { cb?.(payload); } catch {}
+      };
+      ipcRenderer.on('auth:state', handler);
+      return () => ipcRenderer.removeListener('auth:state', handler);
+    },
+  },
   // internal navigation push from main (tray shortcuts)
   _onNavigateTab: () => {
     const h = (_e, p) => {

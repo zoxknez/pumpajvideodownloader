@@ -1,6 +1,6 @@
 <div align="center">
 
-   <img src="src/assets/pumpaj-logo.svg" alt="Pumpaj logo" width="96" height="96" />
+   <img src="public/pumpaj-logo.svg" alt="Pumpaj logo" width="96" height="96" />
 
    <h1>Pumpaj Media Downloader</h1>
 
@@ -49,25 +49,19 @@
 
 Repository layout highlights:
 
-- `src/` – React app components and client libs
 - `server/` – Express server, routes, and core utilities
 - `electron/` – Desktop entry, preload, and packaging
 - `tools/` – Dev scripts (stop, clean, smoke, clean‑data)
 
-## 📦 Requirements
 
 - Node.js >= 20 (LTS). Repo sadrži `.nvmrc`, pa je dovoljno pokrenuti `nvm use` da preuzme tačnu verziju.
 - Windows is the primary target for the desktop build; the web app runs cross‑platform
 
 ## 🚀 Quick start (development)
-
 Select Node version:
-
 ```powershell
 nvm use
 ```
-
-Install dependencies (root manages the workspace and the server package):
 
 ```powershell
 npm install
@@ -76,25 +70,19 @@ npm install
 Start both frontend and backend (recommended):
 
 ```powershell
-npm run dev:start:all
-```
-
 Start individually:
 
 ```powershell
 # Frontend (Vite on http://localhost:5183)
 npm run dev:start:frontend
-
 # Backend (Express on http://localhost:5176)
 npm run dev:start:backend
 ```
 
-Stop stuck dev ports and clean temp artifacts:
 
 ```powershell
 npm run dev:stop
 npm run dev:clean
-```
 
 Start with a clean data slate (removes dist/, logs/, and server data):
 
@@ -107,32 +95,18 @@ Smoke test (server health):
 ```powershell
 npm run dev:smoke
 ```
-
-### ✅ Pre-release verification
-
-```powershell
-npm run test -w server
-npm run verify
-```
-
 `npm run test -w server` pokreće brze API health testove (Vitest + Supertest) sa `NODE_ENV=test`. 
 `npm run verify` zatim pokriva lint, oba typechecka, buildove i sve testove, identično onome što prolazi u CI pipeline-u.
 
 ## 🤖 Continuous integration
-
-- Svaki push na `main` i svaki Pull Request pokreće [CI workflow](https://github.com/o0o0o0o0o0o0o0o0o0o0o0o0o0o0o0o/pumpaj_video_downloader/actions/workflows/ci.yml)
-- Workflow koristi Node 20, radi `npm ci`, zatim `npm run verify`, pa zato lokalno izvršavanje `verify` + `test -w server` garantuje zelen build
-- Artefakti se ne objavljuju iz CI-a (Railway/Vercel deploy se radi ručno prema [production runbooku](docs/production-setup.md)), ali izlaz iz CI-a služi kao gate pre merge-a/deploya
 - Dnevni [Production Smoke Tests](https://github.com/o0o0o0o0o0o0o0o0o0o0o0o0o0o0o0o/pumpaj_video_downloader/actions/workflows/smoke-prod.yml) workflow (06:00 UTC) + ručni trigger proveravaju da su Vercel frontend i Railway backend dostupni (`tools/smoke-prod.ps1` validira web landing, `/health` (`ok: true`) i `/api/version` meta podatke)
 
 ## 🖥️ Desktop (Electron) development
 
-For a desktop experience with IPC controls:
 
 ```powershell
 # Build UI once in watch mode and run Electron
 npm run dev:ipc
-```
 
 Production build (Windows portable + zip):
 
@@ -149,9 +123,6 @@ npm run build:all
 npm run preview
 ```
 
-`npm run build:all` first bundles the Vite desktop UI and then exports the Next.js web app, mirroring the production pipeline. See [`docs/DEPLOY.md`](docs/DEPLOY.md) for a full pre-release checklist (env vars, smoke tests, packaging steps).
-
-`vite build` outputs to `dist/`. `vite preview` serves the static build locally.
 
 ## ⚙️ Configuration
 
@@ -225,7 +196,6 @@ For the latest production checklist with domains and credentials, see [`docs/pro
 - Ctrl+L – Focus URL input
 
 ## 🔌 Job API (server)
-
 - Start best video+audio: `POST /api/job/start/best { url, title } → { id }`
 - Start best audio: `POST /api/job/start/audio { url, title, format } → { id }`
 - Progress SSE: `GET /api/progress/:id` (events: `message`, `end`)
@@ -233,12 +203,60 @@ For the latest production checklist with domains and credentials, see [`docs/pro
 - Cancel all: `POST /api/jobs/cancel-all`
 - Download artifact: `GET /api/job/file/:id` (supports `HEAD`; auto‑cleans on stream close)
 - Metrics: `GET /api/jobs/metrics` → `{ running, queued, maxConcurrent }`
+- Prometheus scrape: `GET /metrics.prom` exposes job gauges and proxy histograms (`pumpaj_proxy_duration_seconds`, `pumpaj_proxy_bytes`, error counters)
 - Settings:
    - `GET /api/jobs/settings` → `{ maxConcurrent, proxyUrl?, limitRateKbps? }`
    - `POST /api/jobs/settings { ... }` – persists and updates the scheduler live
 
-## 🧩 Troubleshooting
+### Signed download/progress links
 
+- Issue short-lived signatures with `POST /api/job/file/:id/sign` (default TTL 30 min) and `POST /api/progress/:id/sign` (default TTL 10 min); both clamp to ≤1h.
+- Signed responses include `s=<token>`; treat them like bearer secrets—avoid persisting them to logs, analytics, or crash reports.
+- Downloads/SSE fall back to authenticated access automatically (`Authorization` header), and responses now vary on `Authorization` to keep caches honest.
+
+## 📡 Proxy streaming & SSE contracts
+
+### Proxy download `/proxy`
+
+- **Status codes**
+  - `502` + `error="upstream_size_limit"` – stream exceeded the local byte cap (`Retry-After` omitted)
+  - `429` + `error="upstream_ratelimit"` – upstream responded with `429`; `Retry-After` mirrors upstream or defaults to 30s
+  - `416` – invalid `Range` request upstream refused to satisfy
+  - `413` – upfront guard when declared `Content-Length` breaches `MAX_FILESIZE_MB`
+- **Response headers** (errors and success)
+  - `Proxy-Status: pumpaj; error="…"; details="…"` – RFC 9209 reason string for observability
+  - `Retry-After: <seconds>` – only when retry is sensible (currently upstream 429)
+  - `Cache-Control: no-store` and `Accept-Ranges: bytes` are always enforced locally
+  - Only a hardened allowlist is replayed from upstream on success: `content-type`, `content-length`, `content-disposition`, `accept-ranges`, `etag`, `last-modified`, `cache-control`
+- **Safety rails**
+  - Chunked responses without `Content-Length` are streamed through a guarded transform that aborts once the local byte cap is exceeded
+  - Dangerous upstream headers (`set-cookie`, `vary`, etc.) are dropped even when the proxy succeeds
+  - Errors flush with `Connection: close` before the JSON body so callers do not await extra chunks
+
+#### Quick probes
+
+```powershell
+# Over-limit guard (returns 502 + JSON error body)
+curl -i "http://localhost:5176/proxy?url=https://example.com/too-big.bin"
+
+# Range request rejected by upstream (returns 416)
+curl -i -H "Range: bytes=99999-" "http://localhost:5176/proxy?url=https://example.com/resource.bin"
+```
+
+### Progress SSE `/api/progress/:id`
+
+- `retry: 5000` is emitted so reconnect attempts back off to 5s
+- Client can resume from the most recent event id by supplying `Last-Event-ID`
+- Events currently emitted:
+  - unnamed (`data: { ... }`) – progress payloads
+  - `event: end` – job finished or was cancelled
+  - `event: ping` – keepalive heartbeat
+
+```powershell
+curl -N -H "Accept: text/event-stream" -H "Authorization: Bearer <JWT>" "http://localhost:5176/api/progress/<jobId>"
+```
+
+## 🧩 Troubleshooting
 - Frontend port 5183 already in use
    - A Vite instance is already running; run:
       ```powershell
@@ -254,259 +272,4 @@ For the latest production checklist with domains and credentials, see [`docs/pro
    - The server uses `youtube-dl-exec` and `ffmpeg-static`. Desktop builds bundle binaries. Ensure network access for yt‑dlp updates if needed.
 - Proxy/Rate limits
    - Configure via Settings in the UI or POST to `/api/jobs/settings` (proxy URL, bandwidth caps).
-
-## 🔒 Security & policies
-
-- Security middleware: helmet, rate limiting, HPP, SSRF guard, CORS
-- Policy system gates max quality, concurrency, playlist limits, and features per plan (FREE vs PREMIUM)
-
-## 🤝 Contributing
-
-PRs and issues are welcome. Keep changes focused, and include a short description, screenshots for UI changes, and steps to test.
-
-## 🙏 Acknowledgements
-
-- yt‑dlp – amazing open‑source downloader
-- ffmpeg / ffprobe – media swiss‑army knives
-- Vite + React – the modern web dev stack
-
-## 📸 Screenshots
-
-Real app UI, captured from the current build:
-
-<div align="center">
-
-<img src="docs/pumpaj-home.jpg" alt="Home screen (idle)" width="900" />
-
-<br /><br />
-
-<img src="docs/pumpaj-analysis.jpg" alt="Analysis completed with video/audio options" width="900" />
-
-</div>
-
-## 🇷🇸 Srpski (Serbian)
-
-### 📖 Opis
-
-Pumpaj Media Downloader je dvo‑modni downloader: Web aplikacija (Vite + React) i Desktop aplikacija (Electron) pokretana yt‑dlp + ffmpeg alatima, sa praćenjem napretka u realnom vremenu (SSE), pametnim redom poslova i modernim UI‑jem.
-
-### ✨ Ključne funkcije
-
-- Analiza URL‑ova pomoću yt‑dlp i jasan prikaz Video / Audio / Thumbnail opcija
-- Serverski red poslova sa živim napretkom, otkazivanjem jednog posla ili svih
-- Ograničenja konkurentnosti, rad sa privremenim fajlovima i automatsko čišćenje
-- Desktop režim (Electron): ugradjeni server, IPC kontrole (Open Downloads, Pause/Resume)
-- Sistem politika (FREE vs PREMIUM) za ograničenje kvaliteta, funkcija i paralelizma
-- Lep, brz UI sa prečicama na tastaturi i status bedževima
-
-### 🧱 Arhitektura
-
-- Frontend: Vite + React + TypeScript (port 5183, striktno)
-- Backend: Express + yt‑dlp + ffmpeg (podrazumevano 5176)
-- Desktop: Electron omotač sa IPC‑om i ugradjenim serverom
-- Realtime: SSE za napredak preuzimanja
-- Skladište: JSON fajlovi u `server/data/` (settings, users, history) uz migraciju sa starih putanja
-
-Struktura repozitorijuma (skraćeno):
-- `src/` – React komponentе i klijentske biblioteke
-- `server/` – Express server, rute i pomoćne funkcije
-- `electron/` – Desktop ulazne tačke i build
-- `tools/` – skripte za razvoj (stop, clean, smoke, clean‑data)
-
-### 📦 Zahtevi
-
-- Node.js >= 18.18
-- Windows je primarni cilj za desktop build; web radi na svim platformama
-
-### 🚀 Brzi start (razvoj)
-
-Instalacija zavisnosti:
-
-```powershell
-npm install
-```
-
-Pokretanje oba servisa:
-
-```powershell
-npm run dev:start:all
-```
-
-Pojedinačno pokretanje:
-
-```powershell
-# Frontend (Vite, http://localhost:5183)
-npm run dev:start:frontend
-
-# Backend (Express, http://localhost:5176)
-npm run dev:start:backend
-```
-
-Zaustavljanje portova i čišćenje artefakata:
-
-```powershell
-npm run dev:stop
-npm run dev:clean
-```
-
-Čist početak podataka (briše dist/, logs/ i server/data):
-
-```powershell
-npm run dev:clean:data
-```
-
-Smoke test (zdravlje servera):
-
-```powershell
-npm run dev:smoke
-```
-
-### ✅ Verifikacija pre objave
-
-```powershell
-npm run verify
-```
-
-Pokreće lint, typecheck, buildove (desktop + web) i testove — isto što i CI.
-
-### 🖥️ Desktop (Electron)
-
-Razvoj sa IPC kontrolama:
-
-```powershell
-npm run dev:ipc
-```
-
-Proizvodni build (Windows portable + zip):
-
-```powershell
-npm run dist:win
-```
-
-### 🌐 Web build
-
-```powershell
-npm run build:all
-npm run preview
-```
-
-`npm run build:all` prvo izgradi Vite desktop UI, a zatim Next.js web aplikaciju (isto kao CI). Nakon uspešnog builda, `npm run preview` služi statički sadržaj za finalnu proveru.
-
-### ⚙️ Konfiguracija
-
-Frontend
-- Počni od šablona i prilagodi vrednosti:
-
-  ```powershell
-  copy web/.env.example web/.env.local
-  ```
-
-- `.env.local`
-   - `NEXT_PUBLIC_API=http://localhost:5176`
-   - `NEXT_PUBLIC_SUPABASE_URL=https://<projekat>.supabase.co`
-   - `NEXT_PUBLIC_SUPABASE_ANON_KEY=<anon>`
-   - (Za legacy Vite UI) `VITE_API_BASE=http://localhost:5176`
-   - UI uvek pokušava i auto‑detekciju: query `?apiBase=`, `window.__API_BASE`, heuristika za `file://`
-
-Backend (okruženje)
-- Kopiraj šablon i popuni vrednosti:
-
-  ```powershell
-  copy server/.env.example server/.env
-  ```
-
-- Bitna podešavanja:
-   - `PORT=5176` (ili željeni port)
-   - `CORS_ORIGIN=*` (ili lista domena)
-   - `ALLOWED_HOSTS=...` (SSRF zaštita)
-   - `APP_JWT_SECRET`, `APP_JWT_PUBLIC_KEY`, `APP_JWT_PRIVATE_KEY` (Supabase most)
-   - `MAX_FILESIZE_MB`, `MAX_DURATION_SEC`, `PROXY_DOWNLOAD_MAX_PER_MIN`
-
-Direktorijum sa podacima (kanonski)
-- `server/data/` sadrži:
-   - `settings.json` – podešavanja servera (port, limiti…)
-   - `history.json` – istorija poslova
-   - `users.json` – korisnici i planovi
-- Na prvom startu server migrira fajlove sa starih putanja (npr. `server/server/data/`).
-- Verziona kontrola ignoriše ove fajlove; koristi `npm run dev:clean:data` za reset.
-
-### 🌍 Produkcija (sažeto)
-
-Detaljan vodič je u [`docs/production-setup.md`](docs/production-setup.md). Najkraće:
-
-1. **Railway** – `PORT=8080`, `NIXPACKS_NODE_VERSION=20`, `CORS_ORIGIN=https://pumpajvideodown.vercel.app` (+ opciono `ALLOWED_HOSTS`)
-2. **Vercel** – podesi `NEXT_PUBLIC_API`, `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY` u Production okruženju i isključi Vercel Authentication ako želiš javni pristup
-3. **Deploy komande**
-   ```powershell
-   railway up
-   vercel deploy --prod --yes
-   vercel alias set <deployment-url> pumpajvideodown.vercel.app
-   ```
-4. **Brza provera** – `npm run smoke:prod` testira i web i backend `/health`
-
-`vercel.json` u korenu repozitorijuma rutira sve zahteve ka `web/` Next.js aplikaciji – ažuriraj ga ako promeniš strukturu.
-
-### ⌨️ Prečice na tastaturi
-
-- Ctrl+1..5 – promene tabova (Download / Queue / Batch / History / Settings)
-- Enter – Analyze (na Download tabu)
-- Ctrl+L – fokusira URL polje
-
-### 🔌 Job API (server)
-
-- Start best video+audio: `POST /api/job/start/best { url, title } → { id }`
-- Start best audio: `POST /api/job/start/audio { url, title, format } → { id }`
-- Napredak (SSE): `GET /api/progress/:id` (eventovi: `message`, `end`)
-- Otkazivanje: `POST /api/job/cancel/:id`
-- Otkazivanje svih: `POST /api/jobs/cancel-all`
-- Preuzimanje artefakta: `GET /api/job/file/:id` (podržava `HEAD`; auto‑čišćenje na kraj strima)
-- Metriке: `GET /api/jobs/metrics` → `{ running, queued, maxConcurrent }`
-- Podešavanja:
-   - `GET /api/jobs/settings` → `{ maxConcurrent, proxyUrl?, limitRateKbps? }`
-   - `POST /api/jobs/settings { ... }` – čuva i primenjuje odmah
-
-### 🧩 Rešavanje problema
-
-- Port 5183 zauzet (frontend)
-   - Vite već radi. Pokreni:
-      ```powershell
-      npm run dev:stop
-      ```
-- UI ne vidi backend
-   - Proveri zdravlje:
-      ```powershell
-      curl http://localhost:5176/health
-      ```
-      Očekuj `{ "ok": true }`. Ako koristiš drugi port, postavi `VITE_API_BASE`.
-- yt‑dlp / ffmpeg
-   - Server koristi `youtube-dl-exec` i `ffmpeg-static`. Desktop build ih pakuje uz aplikaciju.
-- Proxy / ograničenje brzine
-   - Podesi u Settings u UI‑ju ili preko `POST /api/jobs/settings`.
-
-### 🔒 Bezbednost i politike
-
-- Middleware: helmet, rate limiting, HPP, zaštita od SSRF, CORS
-- Politike: ograničavaju maksimalni kvalitet, konkurentnost, veličinu plejlista i dostupne funkcije po planu (FREE/PREMIUM)
-
-### 🤝 Doprinos
-
-## 📸 Screenshots
-
-Real app UI, captured from the current build:
-
-<div align="center">
-
-<img src="docs/pumpaj-home.jpg" alt="Home screen (idle)" width="900" />
-
-<br /><br />
-
-<img src="docs/pumpaj-analysis.jpg" alt="Analysis completed with video/audio options" width="900" />
-
-</div>
-
-Tips:
-- Store images under `docs/` so GitHub can render them in the README.
-- Keep widths around 900–1200px to stay crisp but repo‑friendly.
-
-Dobrodošli su PR‑ovi i issue‑i. Molimo pošaljite fokusirane izmene, kratak opis, screenshot za UI izmene i korake za testiranje.
 
