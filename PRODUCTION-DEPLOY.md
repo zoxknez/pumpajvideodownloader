@@ -1,165 +1,160 @@
-# 🚀 PUMPAJ - Production Deployment Guide
+# 🚀 PUMPAJ - Optimized Production Deployment
 
-Kompletni vodič za deployment Vite frontend-a na Vercel i Express backend-a na Railway.
+**Arhitektura**: Vercel (Frontend UI) + Railway (Backend API/SSE/Downloads)
+**Prednosti**: Stabilan SSE, ffmpeg/yt-dlp bez ograničenja, brži latency
 
-## 📋 Pre-deployment Checklist
+## 📋 Pre-deployment Verifikacija
 
-### 1. Build Verification
 ```powershell
-# Iz root direktorijuma
+# Potpuna build verifikacija
 npm install
-npm run build:server    # Kompajlira backend u server/dist/
+npm run build:server    # Kompajlira server u dist/
 npm run build          # Kreira frontend dist/
-npm run verify         # Potpuna CI pipeline
+npm run verify         # Cela CI pipeline
 ```
 
-### 2. Environment Variables Setup
+## 🚂 RAILWAY BACKEND (PRVO!)
 
-#### Backend (Railway)
-```
-NODE_ENV=production
-PORT=8080
-CORS_ORIGIN=https://your-frontend-domain.vercel.app
-```
-
-#### Frontend (Vercel) 
-```
-VITE_API_BASE=https://your-backend.up.railway.app
-NODE_ENV=production
-```
-
-## 🎯 DEPLOYMENT KORACI
-
-### 📦 Backend Deployment (Railway)
-
-1. **Login to Railway**
+### 1. Login & Project Setup
 ```powershell
 railway login
+railway link    # Izaberi/kreiraj projekat
 ```
 
-2. **Link Project**
+### 2. Environment Variables (Kritično!)
 ```powershell
-railway link
-# Izaberi postojeći projekat ili kreiraj novi
-```
-
-3. **Set Environment Variables**
-```powershell
+# OBAVEZNO - PORT će Railway postaviti automatski
 railway variables set NODE_ENV=production
-railway variables set PORT=8080
-railway variables set CORS_ORIGIN=https://your-frontend.vercel.app
+
+# CORS - svi dozvoljena domeni (dodaj sve verzije)
+railway variables set CORS_ORIGIN="https://your-app.vercel.app,https://your-app-git-main.vercel.app,https://www.your-domain.com"
+
+# Security
+railway variables set LINK_SIGN_SECRET="your-super-strong-secret-key-256bit"
+railway variables set SIGN_KID_ACTIVE=v1
+
+# Opcionalno - Limits
+railway variables set MAX_FILESIZE_MB=500
+railway variables set MAX_DURATION_SEC=7200
+railway variables set PROXY_SPOOL_TO_TEMP=1
 ```
 
-4. **Deploy**
+### 3. Deploy
 ```powershell
 railway up
 ```
 
-5. **Get Backend URL**
+### 4. Get Railway URL
 ```powershell
 railway status
-# Kopiraj dobijenu URL (npr: https://pumpaj-backend-production.up.railway.app)
+# Kopiraj URL: https://something.up.railway.app
 ```
 
-### 🌐 Frontend Deployment (Vercel)
+## 🌐 VERCEL FRONTEND (DRUGO!)
 
-1. **Update vercel.json rewrites sa stvarnim backend URL-om**
-Otvori `vercel.json` i zameni `YOUR_RAILWAY_BACKEND_URL` sa Railway URL-om iz prethodnog koraka.
-
-2. **Login to Vercel**
+### 1. Update Environment
 ```powershell
 vercel login
-```
-
-3. **Link Project**
-```powershell
 vercel link
 ```
 
-4. **Set Environment Variables**
+### 2. Set API Base (Railway URL)
 ```powershell
+# Koristi stvarni Railway URL iz prethodnog koraka
 vercel env add VITE_API_BASE production
-# Unesi Railway backend URL kada CLI traži
+# Paste: https://your-railway-backend.up.railway.app
 
 vercel env add NODE_ENV production
-# Unesi: production
+# Enter: production
 ```
 
-5. **Deploy**
+### 3. Deploy
 ```powershell
 vercel --prod
 ```
 
-## 🔍 Verifikacija
+## ✅ VERIFIKACIJA
 
-### Health Check
+### 1. Health Checks
 ```powershell
-# Backend
-curl https://your-backend.up.railway.app/health
+# Backend ready check
+curl https://your-railway-backend.up.railway.app/ready
 # Expected: {"ok": true}
 
-# Frontend 
+# Frontend load
 curl https://your-frontend.vercel.app
 # Expected: HTML page loads
 ```
 
-### Full Flow Test
-1. Otvori frontend URL u browser-u
-2. Testiraj analyze funkciju sa YouTube URL-om  
-3. Proveri da SSE progress radi
-4. Potvrdi da download završava uspešno
+### 2. SSE Test (Direktan Railway Hit)
+```javascript
+// U browser console na frontend-u
+const sse = new EventSource('https://your-railway-backend.up.railway.app/api/progress/test');
+sse.onmessage = (e) => console.log('SSE:', e.data);
+```
 
-## 🐛 Troubleshooting
+### 3. Full Download Test
+1. Paste YouTube URL → Analyze
+2. Proveri SSE progress updates  
+3. Potvrdi successful download
+
+## � TROUBLESHOOTING
 
 ### CORS Issues
 ```powershell
-# Update backend CORS_ORIGIN
-railway variables set CORS_ORIGIN=https://new-frontend-domain.com
+# Dodaj nov domen u Railway
+railway variables set CORS_ORIGIN="existing-domains,https://new-domain.com"
 ```
 
-### Build Failures
-```powershell
-# Clean i retry
-npm run dev:clean
-npm run build:server && npm run build
-```
+### SSE Connection Problems
+- Direktno testiraj Railway endpoint (zaobiđi Vercel)
+- Proveri CORS headers u Network tab
+- Verify connection origin u Railway logs
 
-### SSE Connection Issues
-- Proveri da Vercel rewrites rade ispravno
-- Test direktno backend `/api/progress/:id` endpoint
-
-## 📊 Monitoring
-
-### Railway Logs
+### Railway Logs Debug
 ```powershell
 railway logs --tail
+# Look for: CORS errors, SSE disconnects, ffmpeg issues
 ```
 
-### Vercel Logs
+## 🚀 PRODUCTION OPTIMIZATIONS
+
+### Railway Regions
+- Izaberi region blizu korisnika
+- US West/East za YouTube brzinu
+- EU Central za evropske korisnike
+
+### CORS Setup
+```javascript
+// Automatski u backend-u - samo setuj Railway env:
+CORS_ORIGIN=https://app.vercel.app,https://app-git-main.vercel.app,https://preview.vercel.app
+```
+
+### SSE Stability  
+- ✅ Direktan Railway hit (trenutna config)
+- ❌ Kroz Vercel proxy (može prekidati)
+
+## 📊 MONITORING
+
+### Railway Health
+```powershell
+railway logs --service backend --tail
+```
+
+### Vercel Analytics
 ```powershell
 vercel logs --follow
 ```
 
-## 🔧 Rollback Strategy
-
-### Railway
-```powershell
-railway redeploy <deployment-id>
-```
-
-### Vercel  
-```powershell
-vercel rollback <deployment-url>
-```
-
 ---
 
-## 🎉 Post-Deployment
+## � KLJUČNE PREDNOSTI
 
-1. Update DNS (ako imaš custom domain)
-2. Configure analytics/monitoring
-3. Setup automated health checks
-4. Update documentation sa production URL-ovima
+1. **Railway**: Stalno aktivan proces, stabilne TCP konekcije, ffmpeg/yt-dlp
+2. **Vercel**: Optimizovan static serving, global CDN, instant deploys  
+3. **Direktan hit**: Minimalan latency za SSE/downloads
+4. **Auto-scaling**: Railway containers + Vercel edge functions
 
-**Frontend URL**: https://your-app.vercel.app  
-**Backend URL**: https://your-api.up.railway.app
+**Production URLs**:
+- Frontend: `https://your-app.vercel.app`
+- Backend: `https://your-api.up.railway.app`
