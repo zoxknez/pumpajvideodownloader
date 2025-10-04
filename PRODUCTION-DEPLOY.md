@@ -156,5 +156,5 @@ vercel logs --follow
 4. **Auto-scaling**: Railway containers + Vercel edge functions
 
 **Production URLs**:
-- Frontend: `https://your-app.vercel.app`
+- Frontend: `https://pumpajvideodl.vercel.app`
 - Backend: `https://your-api.up.railway.app`

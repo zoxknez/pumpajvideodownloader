@@ -1,9 +1,9 @@
 {
-  "name": "vite-react-typescript-starter",
+  "name": "pumpajvideodl",
   "private": true,
-  "version": "0.0.0",
+  "version": "1.0.0",
   "type": "module",
-  "description": "Pumpaj media downloader desktop app (Electron + Vite)",
+  "description": "Pumpaj Video Downloader - Media downloader with web and desktop interfaces",
   "author": "NovPocetak",
   "engines": {
     "node": ">=20.0.0"

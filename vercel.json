@@ -1,4 +1,5 @@
 {
+  "name": "pumpajvideodl",
   "version": 2,
   "buildCommand": "npm run build",
   "outputDirectory": "dist",
