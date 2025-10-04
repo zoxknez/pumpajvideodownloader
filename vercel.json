@@ -1,9 +1,22 @@
 {
   "version": 2,
-  "builds": [
-    { "src": "web/package.json", "use": "@vercel/next" }
-  ],
-  "routes": [
-    { "src": "/(.*)", "dest": "web/$1" }
+  "buildCommand": "npm run build",
+  "outputDirectory": "dist",
+  "framework": "vite",
+  "installCommand": "npm install",
+  "devCommand": "npm run dev:start:frontend",
+  "rewrites": [
+    {
+      "source": "/api/(.*)",
+      "destination": "https://YOUR_RAILWAY_BACKEND_URL/api/$1"
+    },
+    {
+      "source": "/auth/(.*)",
+      "destination": "https://YOUR_RAILWAY_BACKEND_URL/auth/$1"
+    },
+    {
+      "source": "/health",
+      "destination": "https://YOUR_RAILWAY_BACKEND_URL/health"
+    }
   ]
 }
