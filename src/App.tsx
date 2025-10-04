@@ -1,18 +1,20 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
-import { ThumbnailSection } from './components/ThumbnailSection';
-import { VideoSection } from './components/VideoSection';
-import { AudioSection } from './components/AudioSection';
-import { OptionsSection } from './components/OptionsSection';
-import { HistoryTab } from './components/HistoryTab';
-import { BatchTab } from './components/BatchTab';
-import { SettingsTab } from './components/SettingsTab';
-import { AnalysisResults } from './components/AnalysisResults';
-import { PolicyBadge } from './components/PolicyBadge';
+import { useState, useEffect, useCallback, useRef, Suspense } from 'react';
+import { 
+  ThumbnailSection, 
+  VideoSection, 
+  AudioSection, 
+  OptionsSection, 
+  AnalysisResults, 
+  PolicyBadge,
+  HistoryTab,
+  BatchTab,
+  SettingsTab,
+  QueueTab
+} from './components/LazyComponents';
 import { API_BASE, analyzeUrl, getJobsSettings, authHeaders } from './lib/api';
 import { getDefaultDirHandle } from './lib/fsStore';
-import { Download, Search, Clipboard, Trash2, Sparkles, Settings, Monitor, History as HistoryIcon, Clock, Heart } from 'lucide-react';
+import { Download, Search, Clipboard, Trash2, Sparkles, Settings, Monitor, History as HistoryIcon, Clock, Heart } from './lib/icons';
 const pumpajLogo = '/pumpaj-180.png?v=2';
-import { QueueTab } from './components/QueueTab';
 
 type MainTab = 'download' | 'queue' | 'history' | 'batch' | 'settings';
 
@@ -608,7 +610,9 @@ function App() {
             <div className="relative">
               <div className="absolute inset-0 rounded-2xl blur-xl wave-bg" />
   <div className="relative bg-white/5 backdrop-blur-md rounded-b-2xl rounded-t-xl p-6 border border-white/10 border-t-0 min-h-[calc(100vh-360px)]">
-                <HistoryTab />
+                <Suspense fallback={<div className="flex justify-center items-center py-8"><div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div></div>}>
+                  <HistoryTab />
+                </Suspense>
               </div>
             </div>
           )}
@@ -617,18 +621,20 @@ function App() {
             <div className="relative">
               <div className="absolute inset-0 rounded-2xl blur-xl wave-bg" />
   <div className="relative bg-white/5 backdrop-blur-md rounded-b-2xl rounded-t-xl p-6 border border-white/10 border-t-0 min-h-[calc(100vh-360px)]">
-                <QueueTab />
+                <Suspense fallback={<div className="flex justify-center items-center py-8"><div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div></div>}>
+                  <QueueTab />
+                </Suspense>
               </div>
             </div>
           )}
-
-          
 
       {activeMainTab === 'batch' && (
             <div className="relative">
               <div className="absolute inset-0 rounded-2xl blur-xl wave-bg" />
   <div className="relative bg-white/5 backdrop-blur-md rounded-b-2xl rounded-t-xl p-6 border border-white/10 border-t-0 min-h-[calc(100vh-360px)]">
-                <BatchTab />
+                <Suspense fallback={<div className="flex justify-center items-center py-8"><div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div></div>}>
+                  <BatchTab />
+                </Suspense>
               </div>
             </div>
           )}
@@ -637,7 +643,9 @@ function App() {
             <div className="relative">
               <div className="absolute inset-0 rounded-2xl blur-xl wave-bg" />
   <div className="relative bg-white/5 backdrop-blur-md rounded-b-2xl rounded-t-xl p-6 border border-white/10 border-t-0 min-h-[calc(100vh-360px)]">
-                <SettingsTab />
+                <Suspense fallback={<div className="flex justify-center items-center py-8"><div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div></div>}>
+                  <SettingsTab />
+                </Suspense>
               </div>
             </div>
           )}

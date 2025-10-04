@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { DownloadCard } from './DownloadCard';
-import { Settings, Zap, Shield, Cpu, HardDrive, Wifi, Crown, Rocket, FolderOpen, Clock } from 'lucide-react';
+import { Settings, Zap, Shield, Cpu, HardDrive, Wifi, Crown, Rocket, FolderOpen, Clock } from '../lib/icons';
 import { usePolicy } from './AuthProvider';
 import { useToast } from './ToastProvider';
 import { openPremiumUpgrade } from '../lib/premium';

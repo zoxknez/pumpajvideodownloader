@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { History as HistoryIcon, RefreshCw, Play, Trash2, RotateCcw, Clock, FileType, HardDrive, AlertCircle, CheckCircle, XCircle, Search, Copy, Download } from 'lucide-react';
+import { History as HistoryIcon, RefreshCw, Play, Trash2, RotateCcw, Clock, FileType, HardDrive, AlertCircle, CheckCircle, XCircle, Search, Copy, Download } from '../lib/icons';
 import { useToast } from './ToastProvider';
 import { desktopHistoryList, desktopHistoryClear, desktopHistoryRemove, revealPath, openPath } from '../lib/downloader';
 import { API_BASE } from '../lib/api';

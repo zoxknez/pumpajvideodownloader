@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Clock, Play, Trash2, ArrowUp, ArrowDown, RefreshCw, ChevronsUp, ChevronsDown, FastForward, Sparkles } from 'lucide-react';
+import { Clock, Play, Trash2, ArrowUp, ArrowDown, RefreshCw, ChevronsUp, ChevronsDown, FastForward, Sparkles } from '../lib/icons';
 import { useToast } from './ToastProvider';
 import { usePolicy } from './AuthProvider';
 import { PolicyBadge } from './PolicyBadge';

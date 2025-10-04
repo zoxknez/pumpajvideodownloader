@@ -53,6 +53,8 @@ export function requestLogger(req: Request, res: Response, next: NextFunction) {
   next();
 }
 
+// NOTE: Added '/api/me' to quiet paths to avoid log spam from anonymous auth checks
+// that intentionally return 401 during unauthenticated page loads / HMR reloads.
 const QUIET_PATHS = new Set([
   '/health',
   '/api/health',
@@ -60,6 +62,7 @@ const QUIET_PATHS = new Set([
   '/api/jobs/settings',
   '/api/history',
   '/api/version',
+  '/api/me', // newly added
 ]);
 
 const QUIET_PREFIXES = ['/api/job/file/'];

@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Clipboard, Trash2, Play, Music2, CheckCircle2, AlertTriangle, Loader2, Square, Download, Upload, XCircle } from 'lucide-react';
+import { Clipboard, Trash2, Play, Music2, CheckCircle2, AlertTriangle, Loader2, Square, Download, Upload, XCircle } from '../lib/icons';
 import { createBatch, getBatch, cancelBatch, type BatchSummary } from '../lib/api';
 import { usePolicy } from './AuthProvider';
 import { useToast } from './ToastProvider';

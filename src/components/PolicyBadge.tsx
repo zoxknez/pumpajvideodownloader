@@ -1,5 +1,5 @@
 import React, { useMemo } from 'react';
-import { Crown, Sparkles, Lock } from 'lucide-react';
+import { Crown, Sparkles, Lock } from '../lib/icons';
 import { usePolicy } from './AuthProvider';
 
 export const PolicyBadge: React.FC<{ className?: string }> = ({ className }) => {

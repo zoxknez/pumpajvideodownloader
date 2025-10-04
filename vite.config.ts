@@ -32,6 +32,24 @@ export default defineConfig((env) => {
     optimizeDeps: {
       exclude: ['lucide-react'],
     },
+    build: {
+      rollupOptions: {
+        output: {
+          manualChunks: {
+            // Vendor chunk - React libraries
+            vendor: ['react', 'react-dom'],
+            // Auth chunk - Supabase for authentication
+            auth: ['@supabase/supabase-js'],
+            // Monitoring chunk - Sentry for telemetry
+            monitoring: ['@sentry/browser'],
+            // UI chunk - UI libraries
+            ui: ['lucide-react']
+          }
+        }
+      },
+      // Increase chunk size warning limit
+      chunkSizeWarningLimit: 1000
+    },
     server: {
       port: 5183,
       strictPort: false,

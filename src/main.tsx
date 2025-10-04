@@ -1,5 +1,5 @@
 /* eslint-disable react-refresh/only-export-components */
-import { StrictMode, useEffect } from 'react';
+import { useEffect } from 'react';
 import { createRoot } from 'react-dom/client';
 import App from './App';
 import { ToastProvider } from './components/ToastProvider';
@@ -17,19 +17,17 @@ function Root() {
     return () => dispose();
   }, []);
   return (
-    <StrictMode>
-      <ErrorBoundary>
-        <AuthProvider>
-          <SettingsProvider>
-            <ToastProvider>
-              <LoginGate>
-                <App />
-              </LoginGate>
-            </ToastProvider>
-          </SettingsProvider>
-        </AuthProvider>
-      </ErrorBoundary>
-    </StrictMode>
+    <ErrorBoundary>
+      <AuthProvider>
+        <SettingsProvider>
+          <ToastProvider>
+            <LoginGate>
+              <App />
+            </LoginGate>
+          </ToastProvider>
+        </SettingsProvider>
+      </AuthProvider>
+    </ErrorBoundary>
   );
 }
 

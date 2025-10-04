@@ -1,6 +1,6 @@
 import React, { useMemo } from 'react';
 import { DownloadCard } from './DownloadCard';
-import { Languages, ListOrdered, Download as DownloadIcon, Image, FolderOpen, Link as LinkIcon, Copy } from 'lucide-react';
+import { Languages, ListOrdered, Download as DownloadIcon, Image, FolderOpen, Link as LinkIcon, Copy } from '../lib/icons';
 import { proxyDownload, ProxyDownloadError } from '../lib/api';
 import { usePolicy } from './AuthProvider';
 import { useToast } from './ToastProvider';

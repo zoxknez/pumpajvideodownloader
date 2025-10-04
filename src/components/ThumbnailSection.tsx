@@ -1,6 +1,6 @@
 import React, { useRef, useState } from 'react';
 import { DownloadCard } from './DownloadCard';
-import { Image, Sparkles, Crown, Eye, Download as DownloadIcon } from 'lucide-react';
+import { Image, Sparkles, Crown, Eye, Download as DownloadIcon } from '../lib/icons';
 import { proxyDownload, ProxyDownloadError } from '../lib/api';
 import { useToast } from './ToastProvider';
 

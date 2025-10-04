@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Settings as SettingsIcon, Monitor, Download as DownloadIcon, Folder, Wifi, Cpu, Shield, Database, Zap, Activity, LogOut, Sparkles, User, CheckCircle2, Lock } from 'lucide-react';
+import { Settings as SettingsIcon, Monitor, Download as DownloadIcon, Folder, Wifi, Cpu, Shield, Database, Zap, Activity, LogOut, Sparkles, User, CheckCircle2, Lock } from '../lib/icons';
 import { getJobsSettings, updateJobsSettings, API_BASE, authHeaders } from '../lib/api';
 import { useClientSettings } from './SettingsContext';
 import { useToast } from './ToastProvider';

@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { DownloadCard } from './DownloadCard';
-import { Volume2, Music, Headphones, Radio, Disc } from 'lucide-react';
+import { Volume2, Music, Headphones, Radio, Disc } from '../lib/icons';
 import { downloadJobFile, isJobFileReady, startAudioJob, subscribeJobProgress } from '../lib/api';
 import { ipcAvailable, startIpcAdvanced, onProgressIpc, onDoneIpc, revealPath, openPath } from '../lib/downloader';
 import { openPremiumUpgrade } from '../lib/premium';

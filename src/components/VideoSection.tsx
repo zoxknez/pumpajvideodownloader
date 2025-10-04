@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { DownloadCard } from './DownloadCard';
-import { Video, Crown, Zap, Shield, Play } from 'lucide-react';
+import { Video, Crown, Zap, Shield, Play } from '../lib/icons';
 import { cancelJob, downloadJobFile, isJobFileReady, resolveFormatUrl, proxyDownload, startBestJob, subscribeJobProgress, jobFileUrl, ProxyDownloadError } from '../lib/api';
 import { ipcAvailable, startIpcAdvanced, onProgressIpc, onDoneIpc, revealPath, openPath } from '../lib/downloader';
 import { openPremiumUpgrade } from '../lib/premium';
