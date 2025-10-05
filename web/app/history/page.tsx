@@ -4,19 +4,16 @@ import React from 'react';
 import dynamic from 'next/dynamic';
 import AppHeader from '@/components/AppHeader';
 import { ErrorBoundary } from '@/components/ErrorBoundary';
-import ClientOnly from '@/components/ClientOnly';
 import { LoginGate } from '@/components/AuthProvider';
 
-const DownloadView = dynamic(() => import('@/components/DownloadView'), { ssr: false });
+const HistoryView = dynamic(() => import('@/components/HistoryView'), { ssr: false });
 
-export default function Page() {
+export default function HistoryPage() {
   return (
     <LoginGate>
       <AppHeader />
       <ErrorBoundary>
-        <ClientOnly>
-          <DownloadView />
-        </ClientOnly>
+        <HistoryView />
       </ErrorBoundary>
     </LoginGate>
   );

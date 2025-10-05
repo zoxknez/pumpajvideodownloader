@@ -4,19 +4,16 @@ import React from 'react';
 import dynamic from 'next/dynamic';
 import AppHeader from '@/components/AppHeader';
 import { ErrorBoundary } from '@/components/ErrorBoundary';
-import ClientOnly from '@/components/ClientOnly';
 import { LoginGate } from '@/components/AuthProvider';
 
-const DownloadView = dynamic(() => import('@/components/DownloadView'), { ssr: false });
+const BatchView = dynamic(() => import('@/components/BatchView'), { ssr: false });
 
-export default function Page() {
+export default function BatchPage() {
   return (
     <LoginGate>
       <AppHeader />
       <ErrorBoundary>
-        <ClientOnly>
-          <DownloadView />
-        </ClientOnly>
+        <BatchView />
       </ErrorBoundary>
     </LoginGate>
   );
