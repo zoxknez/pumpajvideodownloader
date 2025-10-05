@@ -20,6 +20,7 @@ export async function GET(request: NextRequest) {
   if (code) {
     try {
       const cookieStore = await cookies();
+      const response = NextResponse.redirect(new URL('/?auth=success', requestUrl.origin));
       
       const supabase = createServerClient(
         process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -32,10 +33,16 @@ export async function GET(request: NextRequest) {
             setAll(cookiesToSet) {
               try {
                 cookiesToSet.forEach(({ name, value, options }) => {
-                  cookieStore.set(name, value, options);
+                  // Set cookies on the response object
+                  response.cookies.set(name, value, {
+                    ...options,
+                    httpOnly: true,
+                    secure: process.env.NODE_ENV === 'production',
+                    sameSite: 'lax',
+                    path: '/',
+                  });
                 });
               } catch (error) {
-                // Handle cookies in Server Components
                 console.error('Error setting cookies:', error);
               }
             },
@@ -43,20 +50,24 @@ export async function GET(request: NextRequest) {
         }
       );
 
-      const { error: exchangeError } = await supabase.auth.exchangeCodeForSession(code);
+      const { data, error: exchangeError } = await supabase.auth.exchangeCodeForSession(code);
 
       if (exchangeError) {
-        console.error('Code exchange error:', exchangeError);
+        console.error('❌ Code exchange error:', exchangeError);
         return NextResponse.redirect(
           new URL(`/?error=${encodeURIComponent(exchangeError.message)}`, requestUrl.origin)
         );
       }
 
-      // Successful authentication - redirect to home with success flag
-      console.log('✅ OAuth successful, redirecting to home');
-      return NextResponse.redirect(new URL('/?auth=success', requestUrl.origin));
+      if (data.session) {
+        console.log('✅ OAuth successful! Session created for:', data.session.user.email);
+        console.log('✅ Access token:', data.session.access_token.substring(0, 20) + '...');
+      }
+
+      // Return response with cookies set
+      return response;
     } catch (err) {
-      console.error('Auth callback error:', err);
+      console.error('❌ Auth callback error:', err);
       return NextResponse.redirect(
         new URL(`/?error=authentication_failed`, requestUrl.origin)
       );
