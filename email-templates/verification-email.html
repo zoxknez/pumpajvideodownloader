@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="sr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Verifikujte vaš email - Pumpaj</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            background-color: #f5f5f5;
+        }
+        .email-container {
+            max-width: 600px;
+            margin: 40px auto;
+            background-color: #ffffff;
+            border-radius: 12px;
+            overflow: hidden;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.1);
+        }
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            padding: 40px 20px;
+            text-align: center;
+        }
+        .logo {
+            width: 100px;
+            height: 100px;
+            border-radius: 50%;
+            box-shadow: 0 8px 24px rgba(0, 0, 0, 0.2);
+            margin-bottom: 20px;
+        }
+        .header-title {
+            color: #ffffff;
+            font-size: 26px;
+            font-weight: bold;
+            margin: 0;
+        }
+        .content {
+            padding: 40px 30px;
+            text-align: center;
+        }
+        .icon {
+            font-size: 60px;
+            margin-bottom: 20px;
+        }
+        .title {
+            font-size: 24px;
+            color: #333333;
+            margin: 0 0 16px 0;
+            font-weight: 600;
+        }
+        .message {
+            font-size: 16px;
+            color: #555555;
+            line-height: 1.6;
+            margin-bottom: 30px;
+        }
+        .verify-button {
+            display: inline-block;
+            padding: 16px 40px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: #ffffff;
+            text-decoration: none;
+            border-radius: 8px;
+            font-weight: 600;
+            font-size: 18px;
+            box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+            transition: transform 0.2s;
+            margin: 20px 0;
+        }
+        .verify-button:hover {
+            transform: translateY(-2px);
+        }
+        .or-divider {
+            margin: 30px 0;
+            color: #999999;
+            font-size: 14px;
+        }
+        .verification-code {
+            background-color: #f8f9fa;
+            border: 2px dashed #667eea;
+            border-radius: 8px;
+            padding: 20px;
+            margin: 20px 0;
+        }
+        .code-label {
+            font-size: 12px;
+            color: #666666;
+            margin-bottom: 8px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+        .code {
+            font-size: 32px;
+            font-weight: bold;
+            color: #667eea;
+            letter-spacing: 4px;
+            font-family: 'Courier New', monospace;
+        }
+        .expiry-notice {
+            font-size: 14px;
+            color: #999999;
+            margin-top: 20px;
+        }
+        .security-notice {
+            background-color: #fff8e1;
+            border-left: 4px solid #ffc107;
+            padding: 15px 20px;
+            margin: 30px 0;
+            border-radius: 4px;
+            text-align: left;
+        }
+        .security-notice-title {
+            font-weight: 600;
+            color: #f57c00;
+            margin: 0 0 8px 0;
+            font-size: 14px;
+        }
+        .security-notice-text {
+            color: #666666;
+            margin: 0;
+            font-size: 14px;
+        }
+        .footer {
+            background-color: #f8f9fa;
+            padding: 30px;
+            text-align: center;
+            border-top: 1px solid #e0e0e0;
+        }
+        .footer-text {
+            color: #888888;
+            font-size: 14px;
+            margin: 5px 0;
+        }
+    </style>
+</head>
+<body>
+    <div class="email-container">
+        <!-- Header -->
+        <div class="header">
+            <img src="https://pumpajvideodl.com/pumpaj-192.png" alt="Pumpaj Logo" class="logo">
+            <h1 class="header-title">Email Verifikacija</h1>
+        </div>
+
+        <!-- Content -->
+        <div class="content">
+            <div class="icon">✉️</div>
+            
+            <h2 class="title">Verifikujte vaš email</h2>
+            
+            <p class="message">
+                Hvala što ste se registrovali na Pumpaj Video Downloader!<br>
+                Molimo vas da verifikujete vašu email adresu kako biste aktivirali nalog.
+            </p>
+
+            <!-- Verification Button -->
+            <a href="{{verificationLink}}" class="verify-button">
+                Verifikuj email
+            </a>
+
+            <!-- Or divider -->
+            <div class="or-divider">ili kopirajte kod ispod</div>
+
+            <!-- Verification Code -->
+            <div class="verification-code">
+                <div class="code-label">Verifikacioni kod:</div>
+                <div class="code">{{verificationCode}}</div>
+            </div>
+
+            <p class="expiry-notice">
+                ⏰ Ovaj kod ističe za <strong>24 sata</strong>
+            </p>
+
+            <!-- Security Notice -->
+            <div class="security-notice">
+                <p class="security-notice-title">🔒 Bezbednosna napomena</p>
+                <p class="security-notice-text">
+                    Ako niste vi kreirali ovaj nalog, molimo vas da ignorišete ovaj email. 
+                    Nikada ne delite verifikacioni kod sa drugim osobama.
+                </p>
+            </div>
+        </div>
+
+        <!-- Footer -->
+        <div class="footer">
+            <p class="footer-text">
+                <strong>Pumpaj Video Downloader</strong>
+            </p>
+            <p class="footer-text">
+                © 2025 Pumpaj. Sva prava zadržana.
+            </p>
+            <p class="footer-text" style="font-size: 12px; margin-top: 20px;">
+                Primili ste ovaj email jer je neko pokušao da kreira nalog sa vašom email adresom.
+            </p>
+        </div>
+    </div>
+</body>
+</html>

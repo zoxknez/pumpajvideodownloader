@@ -439,10 +439,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [applyUser]);
 
   // Check Supabase session on mount
+  const [supabaseChecked, setSupabaseChecked] = useState(false);
   useEffect(() => {
     const checkSupabaseSession = async () => {
       const supabase = getSupabase();
-      if (!supabase) return;
+      if (!supabase) {
+        setSupabaseChecked(true);
+        return false;
+      }
 
       try {
         const { data: { session } } = await supabase.auth.getSession();
@@ -457,11 +461,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           setMe(user);
           setPolicy(POLICY_DEFAULTS['PREMIUM']);
           setLoading(false);
+          setSupabaseChecked(true);
           return true;
         }
       } catch (err) {
         console.error('Supabase session check error:', err);
       }
+      setSupabaseChecked(true);
       return false;
     };
 
@@ -551,10 +557,19 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }
     };
 
+    // Wait for Supabase check before backend auth
+    if (!supabaseChecked) return;
+
+    // Skip backend if already authenticated via Supabase
+    if (me) {
+      setLoading(false);
+      return;
+    }
+
     checkBackendAuth();
 
     return () => { cancelled = true; };
-  }, [isIpc, token, fetchMeBearer, fetchMeCookie]);
+  }, [isIpc, token, fetchMeBearer, fetchMeCookie, supabaseChecked, me]);
 
   const login = useCallback(async ({ username, password }: LoginPayload) => {
     const name = String(username || '').trim();
