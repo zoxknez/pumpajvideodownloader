@@ -1,5 +1,10 @@
 'use client';
+import React from 'react';
 
-import App from '../../src/App';
+// RootAuth sadrži LoginGate sa savršenim login UI
+import { RootAuth } from './AuthProvider';
 
-export default App;
+export default function DesktopApp() {
+  // Ne trebaš App iz Vite-a – LoginGate će se pojaviti iz RootAuth-a
+  return <RootAuth>{null}</RootAuth>;
+}

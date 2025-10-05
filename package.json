@@ -1,126 +1,16 @@
 {
-  "name": "pumpajvideodl",
+  "name": "pumpaj-web-root",
   "private": true,
-  "version": "1.0.0",
-  "type": "module",
-  "description": "Pumpaj Video Downloader - Media downloader with web and desktop interfaces",
-  "author": "NovPocetak",
-  "engines": {
-    "node": ">=20.0.0"
-  },
+  "version": "0.2.0",
   "workspaces": [
-    "server",
     "web"
   ],
   "scripts": {
-    "dev": "vite",
-    "build": "vite build",
-    "vercel-build": "npm run build",
-    "build:all": "npm run build && npm run build -w web",
-    "build:server": "npm run build --prefix server",
-    "start:server": "npm start --prefix server",
-    "lint": "eslint .",
-    "lint:fix": "eslint . --fix",
-    "format": "npm run lint:fix",
-    "preview": "vite preview",
-    "test": "vitest run",
-    "test:watch": "vitest",
-    "dev:start:frontend": "vite --port 5183",
-    "dev:start:backend": "npm run dev --prefix server",
-    "predev:start:all": "npm run dev:stop",
-    "dev:start:all": "concurrently -k --restart-tries 999 --restart-after 2000 -n FE,BE \"npm:dev:start:frontend\" \"npm:dev:start:backend\"",
-    "dev:start:web": "npm run dev -w web",
-    "predev:start:all:full": "npm run dev:stop",
-    "dev:start:all:full": "concurrently -k --restart-tries 999 --restart-after 2000 -n FE,BE,WEB \"npm:dev:start:frontend\" \"npm:dev:start:backend\" \"npm:dev:start:web\"",
-    "dev:stop": "powershell -NoProfile -ExecutionPolicy Bypass -File .\\tools\\stop.ps1",
-    "dev:clean": "powershell -NoProfile -ExecutionPolicy Bypass -File .\\tools\\clean.ps1",
-    "dev:clean:data": "powershell -NoProfile -ExecutionPolicy Bypass -File .\\tools\\clean-data.ps1",
-    "dev:smoke": "powershell -NoProfile -ExecutionPolicy Bypass -File .\\tools\\smoke.ps1",
-    "smoke:prod": "powershell -NoProfile -ExecutionPolicy Bypass -File .\\tools\\smoke-prod.ps1",
-    "typecheck": "tsc -p tsconfig.app.json --noEmit",
-    "typecheck:server": "tsc -p server/tsconfig.json --noEmit",
-    "dev:ui": "vite build --watch",
-    "dev:electron": "cross-env ELECTRON_DISABLE_SECURITY_WARNINGS=true electron ./electron/main.js",
-    "dev:ipc": "concurrently -k \"npm:dev:ui\" \"npm:dev:electron\"",
-    "verify": "npm run lint && npm run typecheck && npm run typecheck:server && npm run build:server && npm run build:all && npm run test --workspaces=false --if-present && npm run test -w server --if-present",
-    "dist:win": "npm run build && npx electron-builder --win portable zip"
-  },
-  "dependencies": {
-    "@opentelemetry/api": "^1.9.0",
-    "@opentelemetry/instrumentation": "^0.43.0",
-    "@opentelemetry/instrumentation-fetch": "^0.43.0",
-    "@opentelemetry/sdk-trace-base": "^1.9.0",
-    "@opentelemetry/sdk-trace-web": "^1.9.0",
-    "@sentry/browser": "^8.34.0",
-    "@supabase/supabase-js": "^2.58.0",
-    "lucide-react": "^0.544.0",
-    "react": "^19.1.1",
-    "react-dom": "^19.1.1"
-  },
-  "devDependencies": {
-    "@eslint/js": "^9.36.0",
-    "@next/eslint-plugin-next": "^15.5.4",
-    "@types/node": "^24.5.2",
-    "@types/react": "^19.1.13",
-    "@types/react-dom": "^19.1.9",
-    "@vitejs/plugin-react": "^5.0.3",
-    "autoprefixer": "^10.4.21",
-    "chokidar": "^4.0.3",
-    "concurrently": "^9.2.1",
-    "cross-env": "^10.0.0",
-    "electron": "^38.1.2",
-    "electron-builder": "^26.0.12",
-    "eslint": "^9.36.0",
-    "eslint-plugin-react-hooks": "^5.2.0",
-    "eslint-plugin-react-refresh": "^0.4.22",
-    "globals": "^16.4.0",
-    "jsdom": "^27.0.0",
-    "msw": "^2.6.7",
-    "postcss": "^8.5.6",
-    "tailwindcss": "^3.4.17",
-    "typescript": "^5.9.2",
-    "typescript-eslint": "^8.44.1",
-    "vite": "^7.1.7",
-    "vitest": "^3.2.4"
-  },
-  "main": "electron/main.js",
-  "build": {
-    "directories": {
-      "output": "release"
-    },
-    "appId": "com.downloader.app",
-    "productName": "Pumpaj Media Downloader",
-    "artifactName": "PumpajMediaDownloader-${version}-${arch}.${ext}",
-    "files": [
-      "dist/**/*",
-      "electron/**/*",
-      "server/dist/**/*",
-      "server/package.json"
-    ],
-    "extraResources": [
-      {
-        "from": "server/dist",
-        "to": "server/dist"
-      },
-      {
-        "from": "server/package.json",
-        "to": "server/package.json"
-      },
-      {
-        "from": "server/node_modules",
-        "to": "server/node_modules"
-      },
-      {
-        "from": "binaries",
-        "to": "binaries"
-      }
-    ],
-    "win": {
-      "target": [
-        "portable",
-        "zip"
-      ],
-      "icon": "public/pumpaj-icon.ico"
-    }
+    "dev": "npm run dev -w web",
+    "build": "npm run build -w web",
+    "start": "npm run start -w web",
+    "lint": "npm run lint -w web --if-present",
+    "test": "npm run test -w web --if-present",
+    "typecheck": "npm run typecheck -w web --if-present"
   }
 }

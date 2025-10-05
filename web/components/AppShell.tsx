@@ -229,7 +229,7 @@ export function AppShell() {
       {/* Upozorenje ako API_BASE nije setovan (pomaže kod 404 ka Vercel /api) */}
       {!API_BASE && (
         <div className="bg-amber-600/20 text-amber-100 border-b border-amber-400/30 text-xs px-4 py-2 text-center">
-          API_BASE nije eksplicitno postavljen (NEXT_PUBLIC_API ili ?apiBase=). Ako vidiš 404 na /api/* rutama, dodaj ?apiBase=https://tvoj-backend.up.railway.app ili postavi env varijablu.
+          API_BASE nije eksplicitno postavljen (NEXT_PUBLIC_API_BASE ili ?apiBase=). Ako vidiš 404 na /api/* rutama, dodaj ?apiBase=https://tvoj-backend.up.railway.app ili postavi env varijablu.
         </div>
       )}
       <main className="pt-6 lg:pt-10 space-y-6">

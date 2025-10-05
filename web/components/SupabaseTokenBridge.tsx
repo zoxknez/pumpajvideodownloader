@@ -3,7 +3,7 @@
 import { useEffect } from 'react';
 import type { Session } from '@supabase/supabase-js';
 import { getSupabase, isSupabaseConfigured } from '@/lib/supabaseClient';
-import { useAuth } from '../../src/components/AuthProvider';
+import { useAuth } from '@/components/AuthProvider';
 
 type SupabaseTokenBridgeProps = {
   onSessionResolved?: (session: Session | null) => void;

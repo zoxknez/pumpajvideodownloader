@@ -3,8 +3,8 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { getSupabase, isSupabaseConfigured } from '@/lib/supabaseClient';
 import type { AuthChangeEvent, Session } from '@supabase/supabase-js';
 import { apiUrl, postJSON, downloadJobFile } from '@/lib/api';
-// Toast system lives in root src (shared); we reuse it in web mode
-import { useToast } from '../../src/components/ToastProvider';
+// Toast system is now in web/components
+import { useToast } from '@/components/ToastProvider';
 
 export default function DownloaderDemo() {
   const [url, setUrl] = useState('');

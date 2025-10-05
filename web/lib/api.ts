@@ -8,7 +8,7 @@ function normalizeBase(value?: string | null): string {
 }
 
 const API_BASE_RUNTIME = (() => {
-  const envBase = normalizeBase(process.env.NEXT_PUBLIC_API ?? '');
+  const envBase = normalizeBase(process.env.NEXT_PUBLIC_API_BASE ?? process.env.NEXT_PUBLIC_API ?? '');
   if (envBase) return envBase;
 
   // LocalStorage override (manual user runtime override)
@@ -32,11 +32,9 @@ const API_BASE_RUNTIME = (() => {
     if (fromGlobal) return fromGlobal;
   } catch {}
 
-  try {
-    if (typeof window !== 'undefined' && window.location?.protocol === 'file:') {
-      return 'http://127.0.0.1:5176';
-    }
-  } catch {}
+  if (typeof window !== 'undefined' && window.location?.protocol === 'file:') {
+    return 'http://127.0.0.1:5176';
+  }
 
   return '';
 })();

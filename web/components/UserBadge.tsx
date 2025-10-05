@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import { LogOut, Settings } from 'lucide-react';
-import { useAuth } from '../../src/components/AuthProvider';
+import { useAuth } from '@/components/AuthProvider';
 
 export function UserBadge() {
   const { me, logout } = useAuth();

@@ -4,8 +4,9 @@ const nextConfig = {
   eslint: {
     ignoreDuringBuilds: true,
   },
-  experimental: {
-    externalDir: true,
-  },
+  // Uklanjamo externalDir da ne uvozimo desktop komponente
+  // experimental: {
+  //   externalDir: true,
+  // },
 };
 module.exports = nextConfig;

@@ -4,15 +4,123 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ============ FUTURISTIC ANIMATIONS ============ */
+@keyframes quantum-pulse {
+  0%, 100% { transform: scale(1); opacity: 0.5; }
+  50% { transform: scale(1.1); opacity: 0.8; }
+}
+
+@keyframes hologram-flicker {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.8; }
+  75% { opacity: 0.9; }
+}
+
+@keyframes matrix-glow {
+  0% { box-shadow: 0 0 5px rgba(59, 130, 246, 0.5); }
+  50% { box-shadow: 0 0 20px rgba(147, 51, 234, 0.8), 0 0 30px rgba(59, 130, 246, 0.5); }
+  100% { box-shadow: 0 0 5px rgba(59, 130, 246, 0.5); }
+}
+
+@keyframes spin-slow {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+@keyframes float {
+  0%, 100% { transform: translateY(0px); }
+  50% { transform: translateY(-10px); }
+}
+
+@keyframes soft-glow {
+  0%, 100% { opacity: 0.35; transform: scale(1); }
+  50% { opacity: 0.78; transform: scale(1.08); }
+}
+
+@keyframes tap-hand {
+  0%, 88% {
+    opacity: 0;
+    transform: translate(45%, -45%) scale(0.65) rotate(-12deg);
+  }
+  90% {
+    opacity: 1;
+    transform: translate(8%, -8%) scale(1) rotate(-2deg);
+  }
+  92% {
+    transform: translate(2%, -2%) scale(0.94) rotate(3deg);
+  }
+  96% {
+    opacity: 0.85;
+    transform: translate(6%, -6%) scale(1.02) rotate(-1deg);
+  }
+  100% {
+    opacity: 0;
+    transform: translate(45%, -45%) scale(0.7) rotate(-10deg);
+  }
+}
+
+@layer utilities {
+  @keyframes fade-in-left {
+    from { opacity: 0; transform: translateX(-20px); }
+    to { opacity: 1; transform: translateX(0); }
+  }
+  @keyframes fade-in-right {
+    from { opacity: 0; transform: translateX(20px); }
+    to { opacity: 1; transform: translateX(0); }
+  }
+}
+
+.animate-quantum-pulse {
+  animation: quantum-pulse 3s ease-in-out infinite;
+}
+
+.animate-hologram-flicker {
+  animation: hologram-flicker 2s ease-in-out infinite;
+}
+
+.animate-matrix-glow {
+  animation: matrix-glow 2s ease-in-out infinite;
+}
+
+.animate-spin-slow {
+  animation: spin-slow 8s linear infinite;
+}
+
+.animate-float {
+  animation: float 3s ease-in-out infinite;
+}
+
+.animate-soft-glow {
+  animation: soft-glow 3.2s ease-in-out infinite;
+}
+
+.animate-tap-hand {
+  animation: tap-hand 5s ease-in-out infinite;
+}
+
+.animate-fade-in-left { animation: fade-in-left 0.8s ease-out forwards; }
+.animate-fade-in-right { animation: fade-in-right 0.8s ease-out forwards; }
+
+@keyframes fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+.animate-fade-in {
+  animation: fade-in 1s ease-in-out forwards;
+}
+
+/* ============ SVETLOPLAVA TEMA (aktivira se klasom .theme-light na <body>) ============ */
 :root {
   color-scheme: dark;
   font-family: "Segoe UI", "Inter", "Roboto", -apple-system, BlinkMacSystemFont, sans-serif;
-  --bg-gradient: radial-gradient(circle at top left, #9f1239 0%, rgba(15, 23, 42, 0.95) 45%),
-    radial-gradient(circle at bottom right, rgba(220, 38, 38, 0.75) 0%, rgba(15, 23, 42, 0.98) 50%),
-    linear-gradient(135deg, #111827 0%, #0f172a 100%);
-  --card-bg: rgba(15, 23, 42, 0.76);
-  --card-border: rgba(248, 113, 113, 0.35);
-  --field-bg: rgba(15, 23, 42, 0.6);
+
+  /* default (fallback), pregazićemo ispod .theme-light varijantama */
+  --bg-gradient: radial-gradient(110% 90% at 50% -15%, rgba(59,130,246,0.18), transparent 60%),
+    radial-gradient(100% 80% at 50% 110%, rgba(99,102,241,0.16), transparent 65%),
+    linear-gradient(135deg, #061226 0%, #0a1f3d 40%, #0b254a 100%);
+  --card-bg: rgba(10, 23, 55, 0.72);
+  --card-border: rgba(96,165,250,0.28);
+  --field-bg: rgba(9,16,35,0.66);
   --field-border: rgba(248, 113, 113, 0.4);
   --text-strong: #fef2f2;
   --text-muted: #f8b4b4;
@@ -21,14 +129,26 @@
   --accent-dark: #e11d48;
 }
 
-* {
-  box-sizing: border-box;
+/* Svetloplava varijanta – koristi se kad na body stoji .theme-light */
+.theme-light {
+  --bg-gradient:
+    radial-gradient(120% 90% at 50% -15%, rgba(147,197,253,0.55), transparent 60%),
+    radial-gradient(100% 80% at 50% 110%, rgba(191,219,254,0.45), transparent 65%),
+    linear-gradient(135deg, #7EB7FF 0%, #8EC5FF 45%, #A9D4FF 100%);
+  --card-bg: rgba(255,255,255,0.35);
+  --card-border: rgba(255,255,255,0.60);
+  --field-bg: rgba(59,130,246,0.18);      /* blago plava podloga inputa */
+  --field-border: rgba(99,102,241,0.40);  /* indigo border na focus/hover */
+  --text-strong: #ffffff;
+  --text-muted: #f0f6ff;
+  /* accent ostaje rose (brend dugmad/čipovi) */
 }
 
-html, body {
-  margin: 0;
+/* ============ GLOBAL BACKGROUND ============ */
+html {
   min-height: 100%;
-  background: #0f172a;
+  /* svetloplava osnova iza gradijenta */
+  background: #7EB7FF;
   color: var(--text-strong);
 }
 
@@ -39,12 +159,13 @@ body {
   display: flex;
   align-items: stretch;
   justify-content: center;
+  min-height: 100vh;
+  margin: 0;
+  overflow-y: scroll;
+  scrollbar-gutter: stable both-edges;
 }
 
-a {
-  color: inherit;
-}
-
+/* ============ PAGE WRAPPER ============ */
 .pumpaj-page {
   width: 100%;
   min-height: 100vh;
@@ -54,6 +175,7 @@ a {
   padding: 3.5rem 1.5rem 4.5rem;
 }
 
+/* ============ CENTRALNA KARTICA (2 kolone) ============ */
 .pumpaj-card {
   width: min(960px, 100%);
   display: grid;
@@ -63,37 +185,39 @@ a {
   border: 1px solid var(--card-border);
   border-radius: 32px;
   padding: clamp(2rem, 5vw, 3rem);
-  box-shadow: 0 24px 60px rgba(15, 23, 42, 0.6), 0 0 0 1px rgba(248, 113, 113, 0.1);
+  box-shadow: 0 24px 60px rgba(15, 23, 42, 0.35), 0 0 0 1px rgba(255, 255, 255, 0.08);
   backdrop-filter: blur(18px);
+
+  /* KLJUČNO: da ništa ne “iskače” iz kartice (glow, pulse, apsolutni elementi) */
+  overflow: hidden;
+  isolation: isolate;
 }
 
-.pumpaj-hero {
-  display: flex;
-  flex-direction: column;
-  gap: 1.5rem;
-}
-
-.pumpaj-hero img {
-  width: clamp(120px, 20vw, 160px);
-  align-self: flex-start;
-  filter: drop-shadow(0 18px 36px rgba(244, 63, 94, 0.35));
-}
-
+/* ============ LEVA KOLONA (info/tiles) & DESNA (form) – generična tipografija ============ */
 .pumpaj-title {
-  margin: 0;
-  font-size: clamp(2.2rem, 4vw, 3rem);
-  font-weight: 800;
-  line-height: 1.1;
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  font-weight: 900;
+  font-size: clamp(1.8rem, 2.2vw + 1rem, 2.4rem);
+  letter-spacing: -0.01em;
+  color: var(--text-strong);
 }
 
-.pumpaj-subtitle {
-  margin: 0;
-  font-size: 1rem;
-  line-height: 1.7;
-  color: rgba(248, 250, 252, 0.72);
+.pumpaj-sub {
+  margin-top: 0.6rem;
+  color: var(--text-muted);
+  line-height: 1.5;
 }
 
-.pumpaj-status {
+.pumpaj-badges {
+  margin-top: 1rem;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+}
+
+.pumpaj-badge {
   display: inline-flex;
   align-items: center;
   gap: 0.6rem;
@@ -106,6 +230,7 @@ a {
   font-weight: 600;
 }
 
+/* ============ FORME ============ */
 .pumpaj-form {
   display: flex;
   flex-direction: column;
@@ -152,13 +277,16 @@ a {
 }
 
 .pumpaj-button {
-  border: none;
-  border-radius: 999px;
-  padding: 0.85rem 2.2rem;
-  font-size: 1rem;
-  font-weight: 600;
-  background: linear-gradient(135deg, var(--accent), var(--accent-bright));
-  color: #fff;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.9rem 1rem;
+  border-radius: 14px;
+  border: 1px solid rgba(248, 113, 113, 0.35);
+  background: linear-gradient(180deg, var(--accent) 0%, var(--accent-dark) 100%);
+  color: white;
+  font-weight: 800;
+  letter-spacing: 0.02em;
   cursor: pointer;
   transition: transform 160ms ease, box-shadow 160ms ease, opacity 160ms ease;
   box-shadow: 0 16px 32px rgba(244, 63, 94, 0.35);
@@ -173,42 +301,14 @@ a {
   cursor: not-allowed;
   opacity: 0.45;
   box-shadow: none;
-  transform: none;
 }
 
-.pumpaj-progress {
-  display: flex;
-  flex-direction: column;
-  gap: 0.8rem;
-  padding: 1rem 1.2rem;
-  border: 1px solid rgba(248, 113, 113, 0.35);
-  border-radius: 18px;
-  background: rgba(248, 113, 113, 0.08);
-}
-
-.pumpaj-progress-bar {
-  position: relative;
-  width: 100%;
-  height: 12px;
-  border-radius: 999px;
-  overflow: hidden;
-  background: rgba(255, 255, 255, 0.12);
-}
-
-.pumpaj-progress-fill {
-  position: absolute;
-  inset: 0;
-  width: 0;
-  border-radius: inherit;
-  background: linear-gradient(90deg, var(--accent-dark), var(--accent-bright));
-  transition: width 200ms ease;
-}
-
-.pumpaj-progress-pill {
+/* status/poruke */
+.pumpaj-chip {
   display: inline-flex;
   align-items: center;
-  justify-content: center;
-  padding: 0.35rem 0.8rem;
+  gap: 0.4rem;
+  padding: 0.5rem 0.8rem;
   border-radius: 999px;
   background: rgba(248, 113, 113, 0.2);
   font-size: 0.78rem;
@@ -242,13 +342,10 @@ a {
   color: rgba(248, 250, 252, 0.65);
 }
 
-.pumpaj-footer a {
-  color: #fee2e2;
-  font-weight: 600;
-}
-
-@media (max-width: 680px) {
+/* ============ RESPONSIVE ============ */
+@media (max-width: 860px) {
   .pumpaj-card {
+    gap: 1.6rem;
     border-radius: 24px;
     padding: 2rem 1.6rem;
   }
