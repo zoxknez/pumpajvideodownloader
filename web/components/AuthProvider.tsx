@@ -1135,6 +1135,8 @@ export function LoginGate({ children }: { children: React.ReactNode }) {
                       </p>
                     </div>
                     <input
+                      id="auth-username"
+                      name="username"
                       type="text"
                       value={username}
                       onChange={(e) => setUsername(e.target.value)}
@@ -1146,6 +1148,8 @@ export function LoginGate({ children }: { children: React.ReactNode }) {
 
                     {mode === 'register' && (
                       <input
+                        id="auth-email"
+                        name="email"
                         type="email"
                         value={email}
                         onChange={(e) => setEmail(e.target.value)}
@@ -1157,6 +1161,8 @@ export function LoginGate({ children }: { children: React.ReactNode }) {
                     )}
 
                     <input
+                      id="auth-password"
+                      name="password"
                       type="password"
                       value={password}
                       onChange={(e) => setPassword(e.target.value)}

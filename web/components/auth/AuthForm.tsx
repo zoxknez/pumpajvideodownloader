@@ -66,6 +66,8 @@ export const AuthForm: React.FC<Props> = ({
 
       <div className="space-y-2 mb-3">
         <input
+          id="username"
+          name="username"
           type="text"
           value={username}
           onChange={(e) => setUsername(e.target.value)}
@@ -76,6 +78,8 @@ export const AuthForm: React.FC<Props> = ({
         />
         {mode === 'register' && (
           <input
+            id="email"
+            name="email"
             type="email"
             value={email}
             onChange={(e) => setEmail(e.target.value)}
@@ -86,6 +90,8 @@ export const AuthForm: React.FC<Props> = ({
           />
         )}
         <input
+          id="password"
+          name="password"
           type="password"
           value={password}
           onChange={(e) => setPassword(e.target.value)}
@@ -96,6 +102,8 @@ export const AuthForm: React.FC<Props> = ({
         />
         {mode === 'register' && (
           <input
+            id="confirm-password"
+            name="confirm-password"
             type="password"
             value={confirm}
             onChange={(e) => setConfirm(e.target.value)}
