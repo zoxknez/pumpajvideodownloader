@@ -42,12 +42,16 @@ export default function AuthCallback() {
 
         if (access_token && refresh_token) {
           console.log('🔄 Setting session with tokens...');
+          console.log('🔍 Access token (first 50 chars):', access_token.substring(0, 50));
+          console.log('🔍 Refresh token:', refresh_token);
           
           // Set the session manually with the tokens from URL
           const { data, error: setError } = await supabase.auth.setSession({
             access_token,
             refresh_token,
           });
+
+          console.log('📦 setSession response:', { data, error: setError });
 
           if (setError) {
             console.error('❌ Set session error:', setError);
@@ -57,7 +61,9 @@ export default function AuthCallback() {
           }
 
           if (data.session) {
-            console.log('✅ Session set successfully:', data.session.user.email);
+            console.log('✅ Session set successfully!');
+            console.log('✅ User:', data.session.user.email);
+            console.log('✅ Session expires at:', new Date(data.session.expires_at! * 1000).toLocaleString());
             setStatus(`✅ Logged in as ${data.session.user.email}`);
             
             // Give time for session to propagate to AuthProvider
@@ -66,6 +72,9 @@ export default function AuthCallback() {
               router.push('/?auth=success');
             }, 1000);
             return;
+          } else {
+            console.warn('⚠️ setSession returned no session!');
+            console.log('⚠️ Data:', data);
           }
         }
 
