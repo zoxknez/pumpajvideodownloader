@@ -21,4 +21,4 @@ Uključen je **LoginGate** (isto kao u `components/AuthProvider.tsx`) i `PumpajM
 > - `AuthForm.tsx` iz desktop-a je samo wrapper; ovde koristiš direktno `<LoginGate>`.
 > - Ako želiš da "About" bedž prikazuje tvoje kontakt ikone, u `AuthProvider.tsx` to već postoji (1/1).
 
-Srećno! 🚀
+Srećno! 🚀# Deployment trigger - 2025-10-05 13:33:14
