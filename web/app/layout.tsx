@@ -2,6 +2,8 @@
 import './globals.css';
 import { cookies } from 'next/headers';
 import I18nProvider from '@/components/I18nProvider';
+import { AuthProvider } from '@/components/AuthProvider';
+import { ToastProvider } from '@/components/ToastProvider';
 
 const SUPPORTED_LOCALES = new Set(['sr', 'en']);
 
@@ -27,7 +29,13 @@ export default async function RootLayout({ children }: { children: React.ReactNo
   return (
     <html lang={initialLocale} suppressHydrationWarning>
       <body className="pumpaj-page">
-        <I18nProvider initialLocale={initialLocale}>{children}</I18nProvider>
+        <I18nProvider initialLocale={initialLocale}>
+          <AuthProvider>
+            <ToastProvider>
+              {children}
+            </ToastProvider>
+          </AuthProvider>
+        </I18nProvider>
       </body>
     </html>
   );
