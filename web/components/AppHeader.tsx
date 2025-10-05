@@ -19,14 +19,15 @@ export default function AppHeader() {
         <div className="font-extrabold tracking-tight text-sky-900 text-lg">PUMPAJ</div>
         <nav className="flex items-center gap-1">
           {tabs.map(t => {
-            const active = pathname === t.href;
+            // Fix: handle sub-routes like /history/123
+            const isActive = t.href === '/' ? pathname === '/' : pathname.startsWith(t.href);
             return (
               <Link
                 key={t.href}
                 href={t.href}
                 className={[
                   'rounded-xl px-3 py-1.5 text-sm transition',
-                  active
+                  isActive
                     ? 'bg-sky-300/70 text-sky-950 shadow-sm'
                     : 'text-sky-900 hover:bg-sky-200/60',
                 ].join(' ')}
