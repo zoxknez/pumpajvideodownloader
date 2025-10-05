@@ -1,0 +1,21 @@
+{
+  "name": "Pumpaj Video Downloader",
+  "short_name": "Pumpaj",
+  "description": "Premium video downloader for YouTube and other platforms",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#667eea",
+  "icons": [
+    {
+      "src": "/pumpaj-192.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "/pumpaj-512.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}

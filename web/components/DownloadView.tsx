@@ -1,7 +1,7 @@
 'use client';
 import React from 'react';
-import DesktopAppMinimal from './DesktopAppMinimal';
+import DesktopApp from './DesktopApp';
 
 export default function DownloadView() { 
-  return <DesktopAppMinimal />; 
+  return <DesktopApp />; 
 }
