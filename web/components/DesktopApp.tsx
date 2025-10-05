@@ -1,8 +1,8 @@
 'use client';
 import React from 'react';
-import DownloaderHome from './DownloaderHome';
+import DesktopAppMinimal from './DesktopAppMinimal';
 
 export default function DesktopApp() {
-  // Render the main downloader application
-  return <DownloaderHome />;
+  // Render the desktop-style analysis interface
+  return <DesktopAppMinimal />;
 }
