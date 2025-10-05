@@ -161,6 +161,12 @@
                 // 1. Clear localStorage
                 addLog('Clearing localStorage...');
                 try {
+                    // Log existing values first
+                    const apiOverride = localStorage.getItem('pumpaj:apiBaseOverride');
+                    if (apiOverride) {
+                        addLog('Found API override: ' + apiOverride, 'info');
+                    }
+                    
                     localStorage.clear();
                     addLog('localStorage cleared', 'success');
                 } catch (e) {
