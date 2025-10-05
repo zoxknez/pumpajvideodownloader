@@ -438,6 +438,64 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     applyUser(data);
   }, [applyUser]);
 
+  // Check Supabase session on mount
+  useEffect(() => {
+    const checkSupabaseSession = async () => {
+      const supabase = getSupabase();
+      if (!supabase) return;
+
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        if (session?.user) {
+          // User is authenticated via Supabase OAuth
+          const user: User = {
+            id: session.user.id,
+            email: session.user.email,
+            username: session.user.email?.split('@')[0] || 'user',
+            plan: 'PREMIUM', // Default to premium for OAuth users
+          };
+          setMe(user);
+          setPolicy(POLICY_DEFAULTS['PREMIUM']);
+          setLoading(false);
+          return true;
+        }
+      } catch (err) {
+        console.error('Supabase session check error:', err);
+      }
+      return false;
+    };
+
+    checkSupabaseSession();
+  }, []);
+
+  // Listen to Supabase auth state changes
+  useEffect(() => {
+    const supabase = getSupabase();
+    if (!supabase) return;
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+      console.log('Supabase auth event:', event, session?.user?.email);
+      
+      if (event === 'SIGNED_IN' && session?.user) {
+        const user: User = {
+          id: session.user.id,
+          email: session.user.email,
+          username: session.user.email?.split('@')[0] || 'user',
+          plan: 'PREMIUM',
+        };
+        setMe(user);
+        setPolicy(POLICY_DEFAULTS['PREMIUM']);
+      } else if (event === 'SIGNED_OUT') {
+        setMe(null);
+        setPolicy(null);
+      }
+    });
+
+    return () => {
+      subscription.unsubscribe();
+    };
+  }, []);
+
   useEffect(() => {
     let cancelled = false;
 
@@ -471,7 +529,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       return () => { cancelled = true; unsubscribe?.(); };
     }
 
-    (async () => {
+    // Skip backend auth check if Supabase session exists
+    const checkBackendAuth = async () => {
+      const supabase = getSupabase();
+      if (supabase) {
+        const { data: { session } } = await supabase.auth.getSession();
+        if (session?.user) {
+          setLoading(false);
+          return; // Already authenticated via Supabase
+        }
+      }
+
       setLoading(true);
       try {
         if (token) await fetchMeBearer(token);
@@ -481,7 +549,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       } finally {
         if (!cancelled) setLoading(false);
       }
-    })();
+    };
+
+    checkBackendAuth();
 
     return () => { cancelled = true; };
   }, [isIpc, token, fetchMeBearer, fetchMeCookie]);
@@ -564,11 +634,23 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [isIpc, login, fetchMeBearer, setToken]);
 
   const logout = useCallback(async () => {
+    // Logout from Supabase if session exists
+    const supabase = getSupabase();
+    if (supabase) {
+      try {
+        await supabase.auth.signOut();
+      } catch (err) {
+        console.error('Supabase logout error:', err);
+      }
+    }
+
+    // Logout from backend
     if (isIpc) {
       try { await (window as any).api?.auth?.logout?.(); } catch {}
     } else {
       try { await fetch(authUrl('/logout'), { method: 'POST', credentials: 'include' }); } catch {}
     }
+    
     setToken(null); setMe(null); setPolicy(null);
   }, [isIpc, setToken]);
 
