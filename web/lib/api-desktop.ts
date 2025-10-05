@@ -250,14 +250,15 @@ export async function proxyDownload(opts: { url: string; filename: string; signa
 }
 
 // Job management (simplified)
-export async function startBestJob(payload: { url: string; formatId?: string }) {
+export async function startBestJob(url: string, title?: string): Promise<string> {
   const res = await fetch(`${API_BASE}/api/job/start/best`, {
     method: 'POST',
     headers: authHeaders({ 'Content-Type': 'application/json' }),
-    body: JSON.stringify(payload),
+    body: JSON.stringify({ url, title }),
   });
   if (!res.ok) throw new Error(`Job start failed: ${res.status}`);
-  return await res.json();
+  const data = await res.json();
+  return data.id || data.jobId || '';
 }
 
 export async function startAudioJob(payload: { url: string; formatId?: string }) {
@@ -279,4 +280,85 @@ export async function cancelJob(id: string) {
 
 export function jobFileUrl(id: string): string {
   return `${API_BASE}/api/job/file/${id}`;
+}
+
+// Additional functions needed by VideoSection
+export async function isJobFileReady(id: string): Promise<boolean> {
+  try {
+    const res = await fetch(jobFileUrl(id), {
+      method: 'HEAD',
+      headers: authHeaders(),
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+export async function downloadJobFile(id: string, fallbackName?: string): Promise<boolean> {
+  const url = jobFileUrl(id);
+  window.open(url, '_blank');
+  return true;
+}
+
+export async function resolveFormatUrl(sourceUrl: string, formatId: string): Promise<string | null> {
+  try {
+    const res = await fetch(`${API_BASE}/api/get-url`, {
+      method: 'POST',
+      headers: authHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ url: sourceUrl, formatId }),
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    return data?.url || null;
+  } catch {
+    return null;
+  }
+}
+
+export function subscribeJobProgress(
+  id: string,
+  onProgress: (data: { progress?: number; stage?: string }) => void,
+  onComplete: (status: string) => void
+): { close: () => void } {
+  const eventSource = new EventSource(`${API_BASE}/api/progress/${id}`);
+  
+  eventSource.onmessage = (event) => {
+    try {
+      const data = JSON.parse(event.data);
+      if (data.progress !== undefined || data.stage) {
+        onProgress({ progress: data.progress, stage: data.stage });
+      }
+      if (data.status === 'completed' || data.status === 'failed') {
+        onComplete(data.status);
+        eventSource.close();
+      }
+    } catch (err) {
+      console.error('SSE parse error:', err);
+    }
+  };
+  
+  eventSource.onerror = () => {
+    onComplete('failed');
+    eventSource.close();
+  };
+  
+  return {
+    close: () => eventSource.close()
+  };
+}
+
+export class ProxyDownloadError extends Error {
+  status?: number;
+  code?: string;
+  proxyStatus?: string;
+  requestId?: string;
+  constructor(message: string, opts?: { status?: number; code?: string; proxyStatus?: string; requestId?: string }) {
+    super(message);
+    this.name = 'ProxyDownloadError';
+    this.status = opts?.status;
+    this.code = opts?.code;
+    this.proxyStatus = opts?.proxyStatus;
+    this.requestId = opts?.requestId;
+  }
 }
