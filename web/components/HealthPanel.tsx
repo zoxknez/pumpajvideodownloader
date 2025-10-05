@@ -24,6 +24,7 @@ export function HealthPanel() {
   const [info, setInfo] = useState<VersionInfo | null>(null);
   const [err, setErr] = useState('');
   const [loading, setLoading] = useState(false);
+  const [lastChecked, setLastChecked] = useState<Date | null>(null);
   const numberFmt = useMemo(() => new Intl.NumberFormat('en-US'), []);
 
   async function load() {
@@ -33,8 +34,10 @@ export function HealthPanel() {
       if (!r.ok) throw new Error(await r.text());
       const j = await r.json();
       setInfo(j);
+      setLastChecked(new Date());
     } catch (e: any) {
       setErr(e?.message || 'Failed to load version');
+      setLastChecked(new Date());
     } finally {
       setLoading(false);
     }
@@ -42,10 +45,22 @@ export function HealthPanel() {
 
   useEffect(() => { load(); }, []);
 
+  // Status badge: green if healthy, yellow if error, red if no data
+  const statusColor = err ? 'bg-yellow-500' : info ? 'bg-emerald-500' : 'bg-slate-500';
+  const statusBadge = err ? '🟡' : info ? '🟢' : '⚪';
+
   return (
     <div className="rounded-xl border border-white/10 bg-white/5 p-4 text-xs text-slate-200">
       <div className="flex items-center justify-between mb-2">
-        <span className="font-semibold text-slate-100">Server Health</span>
+        <div className="flex items-center gap-2">
+          <span className="font-semibold text-slate-100">Server Health</span>
+          <span className={`inline-block w-2 h-2 rounded-full ${statusColor}`} title={err ? 'Error' : info ? 'Healthy' : 'Unknown'}></span>
+          {lastChecked && (
+            <span className="text-[10px] text-slate-400">
+              Last: {lastChecked.toLocaleTimeString()}
+            </span>
+          )}
+        </div>
         <button onClick={load} disabled={loading} className="rounded bg-slate-900/60 hover:bg-slate-800/70 px-2 py-1 border border-white/10 text-[11px] disabled:opacity-50">{loading ? '…' : 'Refresh'}</button>
       </div>
       {err && <div className="text-rose-300 mb-2">{err}</div>}

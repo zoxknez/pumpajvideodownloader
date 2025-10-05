@@ -7,7 +7,14 @@ server/node_modules/
 logs/
 server/logs/
 *.log
+
+# Environment variables (only .env.example allowed)
 .env*
+!.env.example
+*.env.local
+*.env.production
+*.env.development
+
 coverage/
 .vite/
 release/

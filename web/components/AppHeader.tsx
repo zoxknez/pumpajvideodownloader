@@ -11,6 +11,16 @@ const tabs = [
   { href: '/settings', label: 'Settings' },
 ] as const;
 
+// Normalize path: remove trailing slash and query params
+const normalizePath = (p: string) => p.replace(/\/+$/, '').split('?')[0] || '/';
+
+// Check if tab is active (handles sub-routes, trailing slash, query params)
+const isActiveTab = (href: string, pathname: string) => {
+  const normHref = normalizePath(href);
+  const normPath = normalizePath(pathname);
+  return normHref === '/' ? normPath === '/' : normPath.startsWith(normHref);
+};
+
 export default function AppHeader() {
   const pathname = usePathname();
   return (
@@ -19,15 +29,14 @@ export default function AppHeader() {
         <div className="font-extrabold tracking-tight text-sky-900 text-lg">PUMPAJ</div>
         <nav className="flex items-center gap-1">
           {tabs.map(t => {
-            // Fix: handle sub-routes like /history/123
-            const isActive = t.href === '/' ? pathname === '/' : pathname.startsWith(t.href);
+            const active = isActiveTab(t.href, pathname);
             return (
               <Link
                 key={t.href}
                 href={t.href}
                 className={[
                   'rounded-xl px-3 py-1.5 text-sm transition',
-                  isActive
+                  active
                     ? 'bg-sky-300/70 text-sky-950 shadow-sm'
                     : 'text-sky-900 hover:bg-sky-200/60',
                 ].join(' ')}

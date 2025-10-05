@@ -13,10 +13,41 @@ function normalizeLocale(raw?: string | null): 'sr' | 'en' {
 }
 
 export const metadata = {
-  title: 'Pumpaj Web',
-  description: 'Premium downloader for your browser',
+  title: {
+    default: 'Pumpaj Video Downloader',
+    template: '%s | Pumpaj',
+  },
+  description: 'Premium video downloader for YouTube and other platforms. High-quality downloads with no throttling.',
+  keywords: ['video downloader', 'youtube downloader', 'mp3 converter', 'video converter', 'pumpaj'],
+  authors: [{ name: 'Pumpaj Team' }],
+  creator: 'Pumpaj',
+  publisher: 'Pumpaj',
   icons: {
     icon: '/pumpaj-192.png',
+    apple: '/pumpaj-192.png',
+  },
+  manifest: '/manifest.json',
+  openGraph: {
+    type: 'website',
+    locale: 'en_US',
+    url: 'https://pumpajvideodl.com',
+    siteName: 'Pumpaj Video Downloader',
+    title: 'Pumpaj Video Downloader',
+    description: 'Premium video downloader for YouTube and other platforms. High-quality downloads with no throttling.',
+    images: [
+      {
+        url: '/pumpaj-512.png',
+        width: 512,
+        height: 512,
+        alt: 'Pumpaj Logo',
+      },
+    ],
+  },
+  twitter: {
+    card: 'summary_large_image',
+    title: 'Pumpaj Video Downloader',
+    description: 'Premium video downloader for YouTube and other platforms.',
+    images: ['/pumpaj-512.png'],
   },
 };
 
