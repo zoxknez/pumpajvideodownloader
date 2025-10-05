@@ -85,6 +85,20 @@ BEGIN
                    AND column_name = 'status') THEN
         ALTER TABLE public.download_history ADD COLUMN status TEXT DEFAULT 'pending';
     END IF;
+    
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                   WHERE table_schema = 'public' 
+                   AND table_name = 'download_history' 
+                   AND column_name = 'downloaded_at') THEN
+        ALTER TABLE public.download_history ADD COLUMN downloaded_at TIMESTAMP WITH TIME ZONE DEFAULT NOW();
+    END IF;
+    
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                   WHERE table_schema = 'public' 
+                   AND table_name = 'download_history' 
+                   AND column_name = 'metadata') THEN
+        ALTER TABLE public.download_history ADD COLUMN metadata JSONB DEFAULT '{}'::jsonb;
+    END IF;
 END $$;
 
 -- Add constraint separately (won't fail if already exists)
