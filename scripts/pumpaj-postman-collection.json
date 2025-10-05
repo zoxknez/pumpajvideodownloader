@@ -1,0 +1,353 @@
+{
+  "info": {
+    "name": "Pumpaj Video Downloader API",
+    "description": "Complete API collection for Pumpaj Video Downloader backend",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "https://pumpaj-backend-production.up.railway.app",
+      "type": "string"
+    },
+    {
+      "key": "token",
+      "value": "your-jwt-token-here",
+      "type": "string"
+    },
+    {
+      "key": "ytUrl",
+      "value": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "Health Check",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/health",
+          "host": ["{{baseUrl}}"],
+          "path": ["health"]
+        }
+      }
+    },
+    {
+      "name": "Version Info",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/api/version",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "version"]
+        }
+      }
+    },
+    {
+      "name": "Analyze URL",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{token}}",
+            "type": "text"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json",
+            "type": "text"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"url\": \"{{ytUrl}}\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/analyze",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "analyze"]
+        }
+      }
+    },
+    {
+      "name": "Start Best Quality Job",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{token}}",
+            "type": "text"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json",
+            "type": "text"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"url\": \"{{ytUrl}}\",\n  \"title\": \"Test Video\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/jobs/start",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "jobs", "start"]
+        }
+      }
+    },
+    {
+      "name": "Start Audio Job",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{token}}",
+            "type": "text"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json",
+            "type": "text"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"url\": \"{{ytUrl}}\",\n  \"title\": \"Test Audio\",\n  \"format\": \"mp3\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/jobs/start/audio",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "jobs", "start", "audio"]
+        }
+      }
+    },
+    {
+      "name": "Get Job Metrics",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{token}}",
+            "type": "text"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/api/jobs/metrics",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "jobs", "metrics"]
+        }
+      }
+    },
+    {
+      "name": "Get History",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{token}}",
+            "type": "text"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/api/history",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "history"]
+        }
+      }
+    },
+    {
+      "name": "Clear History",
+      "request": {
+        "method": "DELETE",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{token}}",
+            "type": "text"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/api/history",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "history"]
+        }
+      }
+    },
+    {
+      "name": "Get Job Settings",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{token}}",
+            "type": "text"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/api/jobs/settings",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "jobs", "settings"]
+        }
+      }
+    },
+    {
+      "name": "Update Job Settings",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{token}}",
+            "type": "text"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json",
+            "type": "text"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"maxConcurrent\": 3,\n  \"limitRateKbps\": 0\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/jobs/settings",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "jobs", "settings"]
+        }
+      }
+    },
+    {
+      "name": "Cancel Job",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{token}}",
+            "type": "text"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/api/jobs/:jobId/cancel",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "jobs", ":jobId", "cancel"],
+          "variable": [
+            {
+              "key": "jobId",
+              "value": "job-id-here"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "Download Job File",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{token}}",
+            "type": "text"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/api/jobs/:jobId/file",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "jobs", ":jobId", "file"],
+          "variable": [
+            {
+              "key": "jobId",
+              "value": "job-id-here"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "Batch Start",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{token}}",
+            "type": "text"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json",
+            "type": "text"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"urls\": [\n    \"https://www.youtube.com/watch?v=dQw4w9WgXcQ\",\n    \"https://www.youtube.com/watch?v=9bZkp7q19f0\"\n  ],\n  \"type\": \"best\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/batch/start",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "batch", "start"]
+        }
+      }
+    },
+    {
+      "name": "Get Batch Status",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{token}}",
+            "type": "text"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/api/batch/:batchId",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "batch", ":batchId"],
+          "variable": [
+            {
+              "key": "batchId",
+              "value": "batch-id-here"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "Cancel Batch",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{token}}",
+            "type": "text"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/api/batch/:batchId/cancel",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "batch", ":batchId", "cancel"],
+          "variable": [
+            {
+              "key": "batchId",
+              "value": "batch-id-here"
+            }
+          ]
+        }
+      }
+    }
+  ]
+}
