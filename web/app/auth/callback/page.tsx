@@ -18,61 +18,51 @@ export default function AuthCallback() {
       }
 
       try {
-        // Get the code from URL hash or query params
-        const hashParams = new URLSearchParams(window.location.hash.substring(1));
-        const queryParams = new URLSearchParams(window.location.search);
+        console.log('🔍 OAuth callback started');
+        console.log('🔍 Full URL:', window.location.href);
         
-        const code = hashParams.get('code') || queryParams.get('code');
-        const error = hashParams.get('error') || queryParams.get('error');
-        const errorDescription = hashParams.get('error_description') || queryParams.get('error_description');
+        setStatus('🔄 Processing authentication...');
+
+        // Let Supabase handle the OAuth callback automatically
+        // It will parse the URL hash/query and set the session
+        const { data, error } = await supabase.auth.getSession();
 
         if (error) {
-          console.error('❌ OAuth error:', error, errorDescription);
-          setStatus(`❌ Error: ${errorDescription || error}`);
-          setTimeout(() => router.push(`/?error=${encodeURIComponent(errorDescription || error)}`), 2000);
+          console.error('❌ Session error:', error);
+          setStatus(`❌ ${error.message}`);
+          setTimeout(() => router.push(`/?error=${encodeURIComponent(error.message)}`), 2000);
           return;
         }
 
-        if (code) {
-          console.log('🔄 Exchanging code for session...');
-          setStatus('🔄 Exchanging code for session...');
-
-          const { data, error: exchangeError } = await supabase.auth.exchangeCodeForSession(code);
-
-          if (exchangeError) {
-            console.error('❌ Code exchange error:', exchangeError);
-            setStatus(`❌ ${exchangeError.message}`);
-            setTimeout(() => router.push(`/?error=${encodeURIComponent(exchangeError.message)}`), 2000);
-            return;
-          }
-
-          if (data.session) {
-            console.log('✅ Session created for:', data.session.user.email);
-            console.log('✅ Access token:', data.session.access_token.substring(0, 20) + '...');
-            setStatus(`✅ Logged in as ${data.session.user.email}`);
-            
-            // Give time for session to propagate
-            setTimeout(() => {
-              console.log('🔄 Redirecting to home...');
-              router.push('/?auth=success');
-            }, 1000);
-            return;
-          }
-        }
-
-        // Check if we already have a session (direct navigation)
-        const { data: { session } } = await supabase.auth.getSession();
-        if (session) {
-          console.log('✅ Already have session:', session.user.email);
-          setStatus(`✅ Already logged in as ${session.user.email}`);
-          setTimeout(() => router.push('/'), 1000);
+        if (data.session) {
+          console.log('✅ Session found:', data.session.user.email);
+          setStatus(`✅ Logged in as ${data.session.user.email}`);
+          
+          // Give time for session to propagate to AuthProvider
+          setTimeout(() => {
+            console.log('🔄 Redirecting to home...');
+            router.push('/?auth=success');
+          }, 1500);
           return;
         }
 
-        // No code and no session
-        console.log('⚠️ No code or session found, redirecting...');
-        setStatus('⚠️ No authentication data found');
-        setTimeout(() => router.push('/'), 2000);
+        // No session yet - this might be normal, the auth state change will trigger
+        console.log('⏳ Waiting for session...');
+        setStatus('⏳ Completing authentication...');
+        
+        // Wait a bit and check again
+        setTimeout(async () => {
+          const { data: sessionData } = await supabase.auth.getSession();
+          if (sessionData.session) {
+            console.log('✅ Session created:', sessionData.session.user.email);
+            setStatus(`✅ Logged in as ${sessionData.session.user.email}`);
+            setTimeout(() => router.push('/?auth=success'), 500);
+          } else {
+            console.log('⚠️ No session created, redirecting...');
+            setStatus('⚠️ Authentication incomplete');
+            setTimeout(() => router.push('/'), 1500);
+          }
+        }, 2000);
 
       } catch (err: any) {
         console.error('❌ Auth callback error:', err);
