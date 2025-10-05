@@ -1,251 +1,219 @@
+'use client';
+
+import { useState, useEffect } from 'react';
+
 export default function ClearCache() {
+  const [logs, setLogs] = useState<string[]>([]);
+  const [status, setStatus] = useState({ message: 'Spremno za čišćenje cache-a i reload aplikacije', type: 'info' });
+  const [clearing, setClearing] = useState(false);
+
+  useEffect(() => {
+    addLog('Cache cleaner ready');
+  }, []);
+
+  const addLog = (message: string, type: 'info' | 'success' | 'error' = 'info') => {
+    const icon = type === 'success' ? '✅' : type === 'error' ? '❌' : 'ℹ️';
+    setLogs(prev => [...prev, `${icon} ${message}`]);
+  };
+
+  const clearAllCache = async () => {
+    setClearing(true);
+    setStatus({ message: 'Čišćenje cache-a...', type: 'info' });
+
+    try {
+      // 1. Clear localStorage
+      addLog('Clearing localStorage...');
+      try {
+        const apiOverride = localStorage.getItem('pumpaj:apiBaseOverride');
+        if (apiOverride) {
+          addLog('Found API override: ' + apiOverride, 'info');
+        }
+        localStorage.clear();
+        addLog('localStorage cleared', 'success');
+      } catch (e: any) {
+        addLog('localStorage error: ' + e.message, 'error');
+      }
+
+      // 2. Clear sessionStorage
+      addLog('Clearing sessionStorage...');
+      try {
+        sessionStorage.clear();
+        addLog('sessionStorage cleared', 'success');
+      } catch (e: any) {
+        addLog('sessionStorage error: ' + e.message, 'error');
+      }
+
+      // 3. Clear cookies
+      addLog('Clearing cookies...');
+      try {
+        const cookies = document.cookie.split(';');
+        for (let cookie of cookies) {
+          const name = cookie.split('=')[0].trim();
+          document.cookie = name + '=;expires=Thu, 01 Jan 1970 00:00:00 UTC;path=/;';
+          document.cookie = name + '=;expires=Thu, 01 Jan 1970 00:00:00 UTC;path=/;domain=.pumpajvideodl.com;';
+        }
+        addLog(`${cookies.length} cookies cleared`, 'success');
+      } catch (e: any) {
+        addLog('Cookies error: ' + e.message, 'error');
+      }
+
+      // 4. Clear Cache Storage
+      addLog('Clearing Cache Storage...');
+      try {
+        if ('caches' in window) {
+          const cacheNames = await caches.keys();
+          await Promise.all(cacheNames.map(name => caches.delete(name)));
+          addLog(`${cacheNames.length} caches deleted`, 'success');
+        }
+      } catch (e: any) {
+        addLog('Cache Storage error: ' + e.message, 'error');
+      }
+
+      // 5. Clear IndexedDB
+      addLog('Clearing IndexedDB...');
+      try {
+        if ('indexedDB' in window) {
+          const dbs = await indexedDB.databases();
+          for (const db of dbs) {
+            if (db.name) {
+              indexedDB.deleteDatabase(db.name);
+            }
+          }
+          addLog(`${dbs.length} databases deleted`, 'success');
+        }
+      } catch (e: any) {
+        addLog('IndexedDB error: ' + e.message, 'error');
+      }
+
+      // 6. Success
+      setStatus({ message: '✅ Cache uspešno obrisan! Reload za 2 sekunde...', type: 'success' });
+      addLog('All cache cleared successfully!', 'success');
+
+      // 7. Hard reload
+      setTimeout(() => {
+        window.location.href = '/';
+      }, 2000);
+
+    } catch (error: any) {
+      setStatus({ message: '❌ Greška: ' + error.message, type: 'error' });
+      addLog('Fatal error: ' + error.message, 'error');
+      setClearing(false);
+    }
+  };
+
   return (
-    <html lang="sr">
-      <head>
-        <title>Force Cache Clear - Pumpaj</title>
-        <style>{`
-          * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-          }
-          body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            min-height: 100vh;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            padding: 20px;
-          }
-          .container {
-            background: white;
-            border-radius: 16px;
-            padding: 40px;
-            max-width: 600px;
-            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
-          }
-          h1 {
-            color: #667eea;
-            margin-bottom: 20px;
-            font-size: 32px;
-          }
-          .status {
-            padding: 16px;
-            border-radius: 8px;
-            margin-bottom: 20px;
-            font-weight: 500;
-          }
-          .status.info {
-            background: #e3f2fd;
-            color: #1976d2;
-          }
-          .status.success {
-            background: #e8f5e9;
-            color: #388e3c;
-          }
-          .status.error {
-            background: #ffebee;
-            color: #d32f2f;
-          }
-          button {
-            width: 100%;
-            padding: 16px;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-            border: none;
-            border-radius: 8px;
-            font-size: 18px;
-            font-weight: 600;
-            cursor: pointer;
-            margin-bottom: 12px;
-            transition: transform 0.2s;
-          }
-          button:hover {
-            transform: translateY(-2px);
-          }
-          button:disabled {
-            opacity: 0.5;
-            cursor: not-allowed;
-          }
-          .steps {
-            list-style: none;
-            margin-top: 20px;
-          }
-          .steps li {
-            padding: 12px;
-            margin-bottom: 8px;
-            background: #f5f5f5;
-            border-radius: 8px;
-            display: flex;
-            align-items: center;
-          }
-          .steps li::before {
-            content: '✓';
-            display: inline-block;
-            width: 24px;
-            height: 24px;
-            background: #4caf50;
-            color: white;
-            border-radius: 50%;
-            text-align: center;
-            line-height: 24px;
-            margin-right: 12px;
-            font-weight: bold;
-          }
-          .log {
-            background: #f5f5f5;
-            border-radius: 8px;
-            padding: 16px;
-            margin-top: 20px;
-            font-family: 'Courier New', monospace;
-            font-size: 12px;
-            max-height: 200px;
-            overflow-y: auto;
-          }
-          .log-entry {
-            margin-bottom: 4px;
-          }
-          .green {
-            background: #4caf50;
-          }
-        `}</style>
-      </head>
-      <body>
-        <div className="container">
-          <h1>🧹 Force Cache Clear</h1>
-          
-          <div id="status" className="status info">
-            Spremno za čišćenje cache-a i reload aplikacije
-          </div>
+    <div style={{
+      minHeight: '100vh',
+      background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'center',
+      padding: '20px'
+    }}>
+      <div style={{
+        background: 'white',
+        borderRadius: '16px',
+        padding: '40px',
+        maxWidth: '600px',
+        boxShadow: '0 20px 60px rgba(0,0,0,0.3)',
+        width: '100%'
+      }}>
+        <h1 style={{ color: '#667eea', marginBottom: '20px', fontSize: '32px' }}>
+          🧹 Force Cache Clear
+        </h1>
 
-          <button id="clearBtn" className="green">
-            🔄 Clear Cache & Reload
-          </button>
-
-          <button onClick={() => window.location.href='/'} style={{background: '#4caf50'}}>
-            ✅ Idi na App
-          </button>
-
-          <div className="log" id="log"></div>
-
-          <ul className="steps">
-            <li>Briše localStorage i sessionStorage</li>
-            <li>Briše sve cookies</li>
-            <li>Briše Cache Storage API</li>
-            <li>Briše IndexedDB</li>
-            <li>Hard reload stranice</li>
-          </ul>
+        <div style={{
+          padding: '16px',
+          borderRadius: '8px',
+          marginBottom: '20px',
+          background: status.type === 'info' ? '#e3f2fd' : status.type === 'success' ? '#e8f5e9' : '#ffebee',
+          border: `2px solid ${status.type === 'info' ? '#2196f3' : status.type === 'success' ? '#4caf50' : '#f44336'}`,
+          color: status.type === 'info' ? '#1976d2' : status.type === 'success' ? '#2e7d32' : '#c62828'
+        }}>
+          {status.message}
         </div>
 
-        <script dangerouslySetInnerHTML={{__html: `
-          const log = document.getElementById('log');
-          const status = document.getElementById('status');
-          const btn = document.getElementById('clearBtn');
+        <button
+          onClick={clearAllCache}
+          disabled={clearing}
+          style={{
+            width: '100%',
+            padding: '16px 32px',
+            fontSize: '18px',
+            fontWeight: 'bold',
+            color: 'white',
+            background: '#667eea',
+            border: 'none',
+            borderRadius: '8px',
+            cursor: clearing ? 'not-allowed' : 'pointer',
+            marginBottom: '12px',
+            opacity: clearing ? 0.5 : 1,
+            transition: 'all 0.2s'
+          }}
+        >
+          {clearing ? '⏳ Čišćenje u toku...' : '🔄 Clear Cache & Reload'}
+        </button>
 
-          function addLog(message, type = 'info') {
-            const entry = document.createElement('div');
-            entry.className = 'log-entry';
-            const icon = type === 'success' ? '✅' : type === 'error' ? '❌' : 'ℹ️';
-            entry.textContent = \`\${icon} \${message}\`;
-            log.appendChild(entry);
-            log.scrollTop = log.scrollHeight;
-          }
+        <button
+          onClick={() => window.location.href = '/'}
+          style={{
+            width: '100%',
+            padding: '16px 32px',
+            fontSize: '18px',
+            fontWeight: 'bold',
+            color: 'white',
+            background: '#4caf50',
+            border: 'none',
+            borderRadius: '8px',
+            cursor: 'pointer',
+            marginBottom: '20px',
+            transition: 'all 0.2s'
+          }}
+        >
+          ✅ Idi na App
+        </button>
 
-          btn.addEventListener('click', async function() {
-            btn.disabled = true;
-            btn.textContent = '⏳ Čišćenje u toku...';
-            
-            status.className = 'status info';
-            status.textContent = 'Čišćenje cache-a...';
-            
-            try {
-              // 1. Clear localStorage
-              addLog('Clearing localStorage...');
-              try {
-                const apiOverride = localStorage.getItem('pumpaj:apiBaseOverride');
-                if (apiOverride) {
-                  addLog('Found API override: ' + apiOverride, 'info');
-                }
-                localStorage.clear();
-                addLog('localStorage cleared', 'success');
-              } catch (e) {
-                addLog('localStorage error: ' + e.message, 'error');
-              }
+        {logs.length > 0 && (
+          <div style={{
+            maxHeight: '300px',
+            overflowY: 'auto',
+            background: '#f5f5f5',
+            padding: '16px',
+            borderRadius: '8px',
+            marginBottom: '20px',
+            fontFamily: 'monospace',
+            fontSize: '14px'
+          }}>
+            {logs.map((log, i) => (
+              <div key={i} style={{ marginBottom: '8px', color: '#333' }}>
+                {log}
+              </div>
+            ))}
+          </div>
+        )}
 
-              // 2. Clear sessionStorage
-              addLog('Clearing sessionStorage...');
-              try {
-                sessionStorage.clear();
-                addLog('sessionStorage cleared', 'success');
-              } catch (e) {
-                addLog('sessionStorage error: ' + e.message, 'error');
-              }
-
-              // 3. Clear cookies
-              addLog('Clearing cookies...');
-              try {
-                const cookies = document.cookie.split(';');
-                for (let cookie of cookies) {
-                  const name = cookie.split('=')[0].trim();
-                  document.cookie = name + '=;expires=Thu, 01 Jan 1970 00:00:00 UTC;path=/;';
-                  document.cookie = name + '=;expires=Thu, 01 Jan 1970 00:00:00 UTC;path=/;domain=.pumpajvideodl.com;';
-                }
-                addLog(\`\${cookies.length} cookies cleared\`, 'success');
-              } catch (e) {
-                addLog('Cookies error: ' + e.message, 'error');
-              }
-
-              // 4. Clear Cache Storage
-              addLog('Clearing Cache Storage...');
-              try {
-                if ('caches' in window) {
-                  const cacheNames = await caches.keys();
-                  await Promise.all(cacheNames.map(name => caches.delete(name)));
-                  addLog(\`\${cacheNames.length} caches deleted\`, 'success');
-                }
-              } catch (e) {
-                addLog('Cache Storage error: ' + e.message, 'error');
-              }
-
-              // 5. Clear IndexedDB
-              addLog('Clearing IndexedDB...');
-              try {
-                if ('indexedDB' in window) {
-                  const dbs = await indexedDB.databases();
-                  for (const db of dbs) {
-                    if (db.name) {
-                      indexedDB.deleteDatabase(db.name);
-                    }
-                  }
-                  addLog(\`\${dbs.length} databases deleted\`, 'success');
-                }
-              } catch (e) {
-                addLog('IndexedDB error: ' + e.message, 'error');
-              }
-
-              // 6. Success
-              status.className = 'status success';
-              status.textContent = '✅ Cache uspešno obrisan! Reload za 2 sekunde...';
-              addLog('All cache cleared successfully!', 'success');
-              
-              // 7. Hard reload
-              setTimeout(() => {
-                window.location.href = '/';
-              }, 2000);
-
-            } catch (error) {
-              status.className = 'status error';
-              status.textContent = '❌ Greška: ' + error.message;
-              addLog('Fatal error: ' + error.message, 'error');
-              btn.disabled = false;
-              btn.textContent = '🔄 Pokušaj ponovo';
-            }
-          });
-
-          addLog('Cache cleaner ready');
-        `}} />
-      </body>
-    </html>
+        <ul style={{
+          listStyle: 'none',
+          padding: 0,
+          color: '#666'
+        }}>
+          <li style={{ padding: '8px 0', borderBottom: '1px solid #eee' }}>
+            ✓ Briše localStorage i sessionStorage
+          </li>
+          <li style={{ padding: '8px 0', borderBottom: '1px solid #eee' }}>
+            ✓ Briše sve cookies
+          </li>
+          <li style={{ padding: '8px 0', borderBottom: '1px solid #eee' }}>
+            ✓ Briše Cache Storage API
+          </li>
+          <li style={{ padding: '8px 0', borderBottom: '1px solid #eee' }}>
+            ✓ Briše IndexedDB
+          </li>
+          <li style={{ padding: '8px 0' }}>
+            ✓ Hard reload stranice
+          </li>
+        </ul>
+      </div>
+    </div>
   );
 }
