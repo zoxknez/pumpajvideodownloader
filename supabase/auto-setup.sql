@@ -8,50 +8,95 @@ CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 
 -- 2. CREATE PROFILES TABLE
-CREATE TABLE IF NOT EXISTS public.profiles (
-    id UUID REFERENCES auth.users(id) PRIMARY KEY,
-    email TEXT UNIQUE NOT NULL,
-    full_name TEXT,
-    avatar_url TEXT,
-    role TEXT DEFAULT 'user',
-    is_active BOOLEAN DEFAULT true,
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-    CONSTRAINT role_check CHECK (role IN ('user', 'admin', 'moderator'))
-);
+DO $$ 
+BEGIN
+    CREATE TABLE IF NOT EXISTS public.profiles (
+        id UUID REFERENCES auth.users(id) PRIMARY KEY,
+        email TEXT UNIQUE NOT NULL,
+        full_name TEXT,
+        avatar_url TEXT,
+        role TEXT DEFAULT 'user',
+        is_active BOOLEAN DEFAULT true,
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+        updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+    );
+EXCEPTION
+    WHEN duplicate_table THEN
+        NULL;
+END $$;
+
+-- Add constraint separately (won't fail if already exists)
+DO $$ 
+BEGIN
+    ALTER TABLE public.profiles 
+    ADD CONSTRAINT role_check CHECK (role IN ('user', 'admin', 'moderator'));
+EXCEPTION
+    WHEN duplicate_object THEN
+        NULL;
+END $$;
 
 -- 3. CREATE DOWNLOAD_HISTORY TABLE
-CREATE TABLE IF NOT EXISTS public.download_history (
-    id UUID DEFAULT uuid_generate_v4() PRIMARY KEY,
-    user_id UUID REFERENCES public.profiles(id) ON DELETE CASCADE,
-    video_url TEXT NOT NULL,
-    video_title TEXT,
-    video_thumbnail TEXT,
-    format_requested TEXT,
-    quality_requested TEXT,
-    file_size BIGINT,
-    duration_seconds INTEGER,
-    status TEXT DEFAULT 'pending',
-    error_message TEXT,
-    downloaded_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-    metadata JSONB DEFAULT '{}'::jsonb,
-    CONSTRAINT status_check CHECK (status IN ('pending', 'processing', 'completed', 'failed'))
-);
+DO $$ 
+BEGIN
+    CREATE TABLE IF NOT EXISTS public.download_history (
+        id UUID DEFAULT uuid_generate_v4() PRIMARY KEY,
+        user_id UUID REFERENCES public.profiles(id) ON DELETE CASCADE,
+        video_url TEXT NOT NULL,
+        video_title TEXT,
+        video_thumbnail TEXT,
+        format_requested TEXT,
+        quality_requested TEXT,
+        file_size BIGINT,
+        duration_seconds INTEGER,
+        status TEXT DEFAULT 'pending',
+        error_message TEXT,
+        downloaded_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+        metadata JSONB DEFAULT '{}'::jsonb
+    );
+EXCEPTION
+    WHEN duplicate_table THEN
+        NULL;
+END $$;
+
+-- Add constraint separately (won't fail if already exists)
+DO $$ 
+BEGIN
+    ALTER TABLE public.download_history 
+    ADD CONSTRAINT status_check CHECK (status IN ('pending', 'processing', 'completed', 'failed'));
+EXCEPTION
+    WHEN duplicate_object THEN
+        NULL;
+END $$;
 
 -- 4. CREATE USER_SETTINGS TABLE
-CREATE TABLE IF NOT EXISTS public.user_settings (
-    id UUID DEFAULT uuid_generate_v4() PRIMARY KEY,
-    user_id UUID REFERENCES public.profiles(id) ON DELETE CASCADE UNIQUE,
-    preferred_quality TEXT DEFAULT '720p',
-    preferred_format TEXT DEFAULT 'mp4',
-    auto_download BOOLEAN DEFAULT false,
-    notifications_enabled BOOLEAN DEFAULT true,
-    theme TEXT DEFAULT 'system',
-    language TEXT DEFAULT 'en',
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-    CONSTRAINT theme_check CHECK (theme IN ('light', 'dark', 'system'))
-);
+DO $$ 
+BEGIN
+    CREATE TABLE IF NOT EXISTS public.user_settings (
+        id UUID DEFAULT uuid_generate_v4() PRIMARY KEY,
+        user_id UUID REFERENCES public.profiles(id) ON DELETE CASCADE UNIQUE,
+        preferred_quality TEXT DEFAULT '720p',
+        preferred_format TEXT DEFAULT 'mp4',
+        auto_download BOOLEAN DEFAULT false,
+        notifications_enabled BOOLEAN DEFAULT true,
+        theme TEXT DEFAULT 'system',
+        language TEXT DEFAULT 'en',
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+        updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+    );
+EXCEPTION
+    WHEN duplicate_table THEN
+        NULL;
+END $$;
+
+-- Add constraint separately (won't fail if already exists)
+DO $$ 
+BEGIN
+    ALTER TABLE public.user_settings 
+    ADD CONSTRAINT theme_check CHECK (theme IN ('light', 'dark', 'system'));
+EXCEPTION
+    WHEN duplicate_object THEN
+        NULL;
+END $$;
 
 -- 5. CREATE INDEXES
 CREATE INDEX IF NOT EXISTS idx_download_history_user_id ON public.download_history(user_id);
