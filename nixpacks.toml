@@ -2,10 +2,10 @@
 nixPkgs = ['nodejs_20', 'ffmpeg']
 
 [phases.install]
-cmds = ['cd server && npm ci']
+cmds = ['npm ci --prefix server']
 
 [phases.build]
-cmds = ['cd server && npm run build']
+cmds = ['npm run build --prefix server']
 
 [start]
-cmd = 'cd server && node dist/index.js'
+cmd = 'node server/dist/index.js'
