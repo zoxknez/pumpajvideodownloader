@@ -480,9 +480,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     if (!supabase) return;
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
-      console.log('Supabase auth event:', event, session?.user?.email);
+      console.log('🔔 Supabase auth event:', event, session?.user?.email);
       
       if (event === 'SIGNED_IN' && session?.user) {
+        console.log('✅ User signed in via OAuth:', session.user.email);
         const user: User = {
           id: session.user.id,
           email: session.user.email,
@@ -491,9 +492,23 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         };
         setMe(user);
         setPolicy(POLICY_DEFAULTS['PREMIUM']);
+        setLoading(false);
+        console.log('✅ User state updated:', user);
       } else if (event === 'SIGNED_OUT') {
+        console.log('👋 User signed out');
         setMe(null);
         setPolicy(null);
+      } else if (event === 'INITIAL_SESSION' && session?.user) {
+        console.log('🔄 Initial session found:', session.user.email);
+        const user: User = {
+          id: session.user.id,
+          email: session.user.email,
+          username: session.user.email?.split('@')[0] || 'user',
+          plan: 'PREMIUM',
+        };
+        setMe(user);
+        setPolicy(POLICY_DEFAULTS['PREMIUM']);
+        setLoading(false);
       }
     });
 
