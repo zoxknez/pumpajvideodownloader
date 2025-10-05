@@ -12,6 +12,7 @@ import { Globe2, Pointer } from 'lucide-react';
 import { API_BASE } from '../lib/api';
 import { PumpajMessage } from './PumpajMessage';
 import { useI18n } from './I18nProvider';
+import { getSupabase } from '../lib/supabaseClient';
 
 export type Plan = 'FREE' | 'PREMIUM';
 
@@ -687,6 +688,40 @@ export function LoginGate({ children }: { children: React.ReactNode }) {
     }
   };
 
+  const handleGoogleLogin = useCallback(async () => {
+    const supabase = getSupabase();
+    if (!supabase) {
+      setError(language === 'sr' ? 'Supabase nije konfigurisan' : 'Supabase not configured');
+      return;
+    }
+
+    setSubmitting(true);
+    setError('');
+
+    try {
+      const { error } = await supabase.auth.signInWithOAuth({
+        provider: 'google',
+        options: {
+          redirectTo: `${window.location.origin}/auth/callback`,
+          queryParams: {
+            access_type: 'offline',
+            prompt: 'consent',
+          }
+        }
+      });
+
+      if (error) {
+        console.error('Google login error:', error);
+        setError(language === 'sr' ? 'Google prijava nije uspela' : 'Google login failed');
+      }
+    } catch (e: any) {
+      console.error('Google OAuth error:', e);
+      setError(e?.message ? String(e.message) : copy.errors.operationFailed);
+    } finally {
+      setSubmitting(false);
+    }
+  }, [language, copy.errors.operationFailed]);
+
   const handleSubmit = async () => {
     setError('');
     const name = username.trim();
@@ -1071,7 +1106,11 @@ export function LoginGate({ children }: { children: React.ReactNode }) {
                         <span className="text-sm uppercase tracking-wider text-white/60">{quickLoginLabel}</span>
                       </div>
                       <div className="flex gap-3">
-                        <button className="flex items-center justify-center gap-2 flex-1 px-3 py-2.5 rounded-lg border border-white/20 bg-white/5 hover:bg-white/10 transition-all text-sm text-white/80 hover:text-white">
+                        <button
+                          onClick={handleGoogleLogin}
+                          disabled={submitting}
+                          className="flex items-center justify-center gap-2 flex-1 px-3 py-2.5 rounded-lg border border-white/20 bg-white/5 hover:bg-white/10 disabled:opacity-50 disabled:cursor-not-allowed transition-all text-sm text-white/80 hover:text-white"
+                        >
                           <svg className="w-5 h-5" viewBox="0 0 24 24" fill="currentColor">
                             <path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" fill="#4285F4"/>
                             <path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853"/>

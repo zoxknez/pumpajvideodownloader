@@ -24,7 +24,8 @@ const config = {
     'https://www.pumpajvideodl.com/**',
     'https://web-c8ycqj1z4-o0o0o0os-projects.vercel.app/**',
     'https://*.vercel.app/**',
-    'http://localhost:3000/**'
+    'http://localhost:3000/**',
+    'https://smzxjnuqfvpzfzmyxpbp.supabase.co/auth/v1/callback'
   ]
 };
 
