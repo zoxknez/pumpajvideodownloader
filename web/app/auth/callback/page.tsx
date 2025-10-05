@@ -23,46 +23,65 @@ export default function AuthCallback() {
         
         setStatus('🔄 Processing authentication...');
 
-        // Let Supabase handle the OAuth callback automatically
-        // It will parse the URL hash/query and set the session
-        const { data, error } = await supabase.auth.getSession();
+        // Parse tokens from URL hash
+        const hashParams = new URLSearchParams(window.location.hash.substring(1));
+        const access_token = hashParams.get('access_token');
+        const refresh_token = hashParams.get('refresh_token');
+        const error = hashParams.get('error');
+        const error_description = hashParams.get('error_description');
+
+        console.log('🔍 Access token found:', access_token ? 'YES' : 'NO');
+        console.log('🔍 Refresh token found:', refresh_token ? 'YES' : 'NO');
 
         if (error) {
-          console.error('❌ Session error:', error);
-          setStatus(`❌ ${error.message}`);
-          setTimeout(() => router.push(`/?error=${encodeURIComponent(error.message)}`), 2000);
+          console.error('❌ OAuth error:', error, error_description);
+          setStatus(`❌ ${error_description || error}`);
+          setTimeout(() => router.push(`/?error=${encodeURIComponent(error_description || error)}`), 2000);
           return;
         }
 
-        if (data.session) {
-          console.log('✅ Session found:', data.session.user.email);
-          setStatus(`✅ Logged in as ${data.session.user.email}`);
+        if (access_token && refresh_token) {
+          console.log('🔄 Setting session with tokens...');
           
-          // Give time for session to propagate to AuthProvider
-          setTimeout(() => {
-            console.log('🔄 Redirecting to home...');
-            router.push('/?auth=success');
-          }, 1500);
+          // Set the session manually with the tokens from URL
+          const { data, error: setError } = await supabase.auth.setSession({
+            access_token,
+            refresh_token,
+          });
+
+          if (setError) {
+            console.error('❌ Set session error:', setError);
+            setStatus(`❌ ${setError.message}`);
+            setTimeout(() => router.push(`/?error=${encodeURIComponent(setError.message)}`), 2000);
+            return;
+          }
+
+          if (data.session) {
+            console.log('✅ Session set successfully:', data.session.user.email);
+            setStatus(`✅ Logged in as ${data.session.user.email}`);
+            
+            // Give time for session to propagate to AuthProvider
+            setTimeout(() => {
+              console.log('🔄 Redirecting to home...');
+              router.push('/?auth=success');
+            }, 1000);
+            return;
+          }
+        }
+
+        // No tokens in URL - check if we already have a session
+        const { data: sessionData } = await supabase.auth.getSession();
+        if (sessionData.session) {
+          console.log('✅ Already have session:', sessionData.session.user.email);
+          setStatus(`✅ Already logged in as ${sessionData.session.user.email}`);
+          setTimeout(() => router.push('/'), 1000);
           return;
         }
 
-        // No session yet - this might be normal, the auth state change will trigger
-        console.log('⏳ Waiting for session...');
-        setStatus('⏳ Completing authentication...');
-        
-        // Wait a bit and check again
-        setTimeout(async () => {
-          const { data: sessionData } = await supabase.auth.getSession();
-          if (sessionData.session) {
-            console.log('✅ Session created:', sessionData.session.user.email);
-            setStatus(`✅ Logged in as ${sessionData.session.user.email}`);
-            setTimeout(() => router.push('/?auth=success'), 500);
-          } else {
-            console.log('⚠️ No session created, redirecting...');
-            setStatus('⚠️ Authentication incomplete');
-            setTimeout(() => router.push('/'), 1500);
-          }
-        }, 2000);
+        // No tokens and no session
+        console.log('⚠️ No authentication data found');
+        setStatus('⚠️ No authentication data found');
+        setTimeout(() => router.push('/'), 2000);
 
       } catch (err: any) {
         console.error('❌ Auth callback error:', err);
