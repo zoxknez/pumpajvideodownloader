@@ -261,14 +261,15 @@ export async function startBestJob(url: string, title?: string): Promise<string>
   return data.id || data.jobId || '';
 }
 
-export async function startAudioJob(payload: { url: string; formatId?: string }) {
+export async function startAudioJob(url: string, title?: string, format?: string): Promise<string> {
   const res = await fetch(`${API_BASE}/api/job/start/audio`, {
     method: 'POST',
     headers: authHeaders({ 'Content-Type': 'application/json' }),
-    body: JSON.stringify(payload),
+    body: JSON.stringify({ url, title, format }),
   });
   if (!res.ok) throw new Error(`Job start failed: ${res.status}`);
-  return await res.json();
+  const data = await res.json();
+  return data.id || data.jobId || '';
 }
 
 export async function cancelJob(id: string) {

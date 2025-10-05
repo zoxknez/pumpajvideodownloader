@@ -35,4 +35,13 @@ export {
   Box,
   Cpu,
   Activity,
+  Volume2,
+  Radio,
+  Languages,
+  ListOrdered,
+  FolderOpen,
+  Link,
+  Copy,
+  Subtitles,
+  Scissors,
 } from 'lucide-react';
