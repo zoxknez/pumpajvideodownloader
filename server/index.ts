@@ -42,6 +42,7 @@ import { requireAuthOrSigned } from './middleware/signed.js';
 import { metricsMiddleware, signIssued, signTtl } from './middleware/httpMetrics.js';
 import { signToken } from './core/signed.js';
 import { traceContext } from './middleware/trace.js';
+import { analyzeRateLimit, batchRateLimit } from './middleware/rateLimit.js';
 
 // ---- Optional ffmpeg-static (fallback na system ffmpeg) ----
 let ffmpegBinary: string | undefined;
@@ -832,7 +833,7 @@ app.post('/api/jobs/settings/reset', requireAuth as any, (_req, res) => {
 // ========================
 // Analyze (yt-dlp -j)
 // ========================
-app.post('/api/analyze', requireAuth as any, async (req: any, res, next: NextFunction) => {
+app.post('/api/analyze', analyzeRateLimit, requireAuth as any, async (req: any, res, next: NextFunction) => {
   try {
     const { url } = AnalyzeBody.parse(req.body);
     if (!isUrlAllowed(url, cfg)) return res.status(400).json({ error: 'Invalid or missing url' });
@@ -1817,7 +1818,7 @@ app.post('/api/job/start/convert', requireAuth as any, async (req: any, res: Res
 // ========================
 // Batches
 // ========================
-app.post('/api/batch', requireAuth as any, async (req: any, res) => {
+app.post('/api/batch', batchRateLimit, requireAuth as any, async (req: any, res) => {
   try {
     const { urls, mode = 'video', audioFormat = DEFAULT_AUDIO_FORMAT, titleTemplate } =
       (req.body || {}) as { urls?: string[]; mode?: 'video'|'audio'; audioFormat?: string; titleTemplate?: string };
