@@ -1,14 +1,54 @@
--- =====================================================
--- AUTOMATSKA INICIJALIZACIJA SUPABASE BAZE
--- Projekat: smzxjnuqfvpzfzmyxpbp
--- =====================================================
+# 🛠️ Supabase Database Setup - Step by Step
 
--- 1. ENABLE EXTENSIONS
+## ❌ Greška: `column "status" does not exist`
+
+### Problem
+PostgreSQL inline CHECK constraints ponekad ne rade sa `CREATE TABLE IF NOT EXISTS`.
+
+### ✅ Rešenje
+Pomeri CHECK constraints na kraj table definicije kao **named constraints**.
+
+---
+
+## 📋 Koraci za Setup
+
+### Opcija 1: Fresh Start (Preporučeno)
+
+1. **Otvori Supabase SQL Editor**:
+   ```
+   https://supabase.com/dashboard/project/smzxjnuqfvpzfzmyxpbp/sql/new
+   ```
+
+2. **Ako već imaš tabele sa greškama, prvo cleanup**:
+   - Kopiraj sve iz `supabase/cleanup.sql`
+   - Paste u SQL Editor
+   - Klikni **RUN**
+   - ⚠️ **WARNING**: Ovo briše sve postojeće podatke!
+
+3. **Pokreni main setup**:
+   - Kopiraj sve iz `supabase/auto-setup.sql` (fixed version)
+   - Paste u SQL Editor
+   - Klikni **RUN**
+
+4. **Proveri rezultate**:
+   ```sql
+   -- Trebalo bi da vidiš 3 reda:
+   -- profiles, download_history, user_settings
+   ```
+
+### Opcija 2: Manual Step-by-Step
+
+Ako imaš problema sa full SQL, evo komandu po komandu:
+
+#### Step 1: Extensions
+```sql
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 CREATE EXTENSION IF NOT EXISTS "pgcrypto";
+```
 
--- 2. CREATE PROFILES TABLE
-CREATE TABLE IF NOT EXISTS public.profiles (
+#### Step 2: Profiles Table
+```sql
+CREATE TABLE public.profiles (
     id UUID REFERENCES auth.users(id) PRIMARY KEY,
     email TEXT UNIQUE NOT NULL,
     full_name TEXT,
@@ -19,9 +59,11 @@ CREATE TABLE IF NOT EXISTS public.profiles (
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
     CONSTRAINT role_check CHECK (role IN ('user', 'admin', 'moderator'))
 );
+```
 
--- 3. CREATE DOWNLOAD_HISTORY TABLE
-CREATE TABLE IF NOT EXISTS public.download_history (
+#### Step 3: Download History Table
+```sql
+CREATE TABLE public.download_history (
     id UUID DEFAULT uuid_generate_v4() PRIMARY KEY,
     user_id UUID REFERENCES public.profiles(id) ON DELETE CASCADE,
     video_url TEXT NOT NULL,
@@ -37,9 +79,11 @@ CREATE TABLE IF NOT EXISTS public.download_history (
     metadata JSONB DEFAULT '{}'::jsonb,
     CONSTRAINT status_check CHECK (status IN ('pending', 'processing', 'completed', 'failed'))
 );
+```
 
--- 4. CREATE USER_SETTINGS TABLE
-CREATE TABLE IF NOT EXISTS public.user_settings (
+#### Step 4: User Settings Table
+```sql
+CREATE TABLE public.user_settings (
     id UUID DEFAULT uuid_generate_v4() PRIMARY KEY,
     user_id UUID REFERENCES public.profiles(id) ON DELETE CASCADE UNIQUE,
     preferred_quality TEXT DEFAULT '720p',
@@ -52,19 +96,25 @@ CREATE TABLE IF NOT EXISTS public.user_settings (
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
     CONSTRAINT theme_check CHECK (theme IN ('light', 'dark', 'system'))
 );
+```
 
--- 5. CREATE INDEXES
-CREATE INDEX IF NOT EXISTS idx_download_history_user_id ON public.download_history(user_id);
-CREATE INDEX IF NOT EXISTS idx_download_history_status ON public.download_history(status);
-CREATE INDEX IF NOT EXISTS idx_download_history_downloaded_at ON public.download_history(downloaded_at DESC);
-CREATE INDEX IF NOT EXISTS idx_profiles_email ON public.profiles(email);
+#### Step 5: Indexes
+```sql
+CREATE INDEX idx_download_history_user_id ON public.download_history(user_id);
+CREATE INDEX idx_download_history_status ON public.download_history(status);
+CREATE INDEX idx_download_history_downloaded_at ON public.download_history(downloaded_at DESC);
+CREATE INDEX idx_profiles_email ON public.profiles(email);
+```
 
--- 6. ENABLE RLS
+#### Step 6: Enable RLS
+```sql
 ALTER TABLE public.profiles ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.download_history ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.user_settings ENABLE ROW LEVEL SECURITY;
+```
 
--- 7. CREATE RLS POLICIES - PROFILES
+#### Step 7: RLS Policies - Profiles
+```sql
 CREATE POLICY "Users can view own profile" 
     ON public.profiles FOR SELECT 
     USING (auth.uid() = id);
@@ -81,8 +131,10 @@ CREATE POLICY "Admins can view all profiles"
             WHERE id = auth.uid() AND role = 'admin'
         )
     );
+```
 
--- 8. CREATE RLS POLICIES - DOWNLOAD_HISTORY
+#### Step 8: RLS Policies - Download History
+```sql
 CREATE POLICY "Users can view own download history" 
     ON public.download_history FOR SELECT 
     USING (auth.uid() = user_id);
@@ -98,8 +150,10 @@ CREATE POLICY "Users can update own download history"
 CREATE POLICY "Users can delete own download history" 
     ON public.download_history FOR DELETE 
     USING (auth.uid() = user_id);
+```
 
--- 9. CREATE RLS POLICIES - USER_SETTINGS
+#### Step 9: RLS Policies - User Settings
+```sql
 CREATE POLICY "Users can view own settings" 
     ON public.user_settings FOR SELECT 
     USING (auth.uid() = user_id);
@@ -111,8 +165,10 @@ CREATE POLICY "Users can insert own settings"
 CREATE POLICY "Users can update own settings" 
     ON public.user_settings FOR UPDATE 
     USING (auth.uid() = user_id);
+```
 
--- 10. CREATE TRIGGERS - AUTO PROFILE CREATION
+#### Step 10: Auto Profile Creation Trigger
+```sql
 CREATE OR REPLACE FUNCTION public.handle_new_user()
 RETURNS TRIGGER AS $$
 BEGIN
@@ -131,13 +187,14 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
 
-DROP TRIGGER IF EXISTS on_auth_user_created ON auth.users;
 CREATE TRIGGER on_auth_user_created
     AFTER INSERT ON auth.users
     FOR EACH ROW
     EXECUTE FUNCTION public.handle_new_user();
+```
 
--- 11. CREATE TRIGGERS - AUTO UPDATE TIMESTAMP
+#### Step 11: Auto Update Timestamp Trigger
+```sql
 CREATE OR REPLACE FUNCTION public.update_updated_at_column()
 RETURNS TRIGGER AS $$
 BEGIN
@@ -146,26 +203,87 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
-DROP TRIGGER IF EXISTS update_profiles_updated_at ON public.profiles;
 CREATE TRIGGER update_profiles_updated_at
     BEFORE UPDATE ON public.profiles
     FOR EACH ROW
     EXECUTE FUNCTION public.update_updated_at_column();
 
-DROP TRIGGER IF EXISTS update_user_settings_updated_at ON public.user_settings;
 CREATE TRIGGER update_user_settings_updated_at
     BEFORE UPDATE ON public.user_settings
     FOR EACH ROW
     EXECUTE FUNCTION public.update_updated_at_column();
+```
 
--- =====================================================
--- GOTOVO! Baza je spremna za upotrebu! 🚀
--- =====================================================
+---
 
--- Provera da li su tabele kreirane:
+## ✅ Verification
+
+Proveri da li su tabele kreirane:
+
+```sql
 SELECT 
     tablename,
     schemaname
 FROM pg_tables 
 WHERE schemaname = 'public' 
 AND tablename IN ('profiles', 'download_history', 'user_settings');
+```
+
+**Očekivani rezultat**:
+```
+tablename           | schemaname
+--------------------|------------
+profiles            | public
+download_history    | public
+user_settings       | public
+```
+
+---
+
+## 🧪 Test
+
+Nakon setup-a, testiraj sa:
+
+```sql
+-- Check profiles
+SELECT * FROM public.profiles LIMIT 5;
+
+-- Check triggers
+SELECT trigger_name, event_object_table 
+FROM information_schema.triggers 
+WHERE trigger_schema = 'public';
+
+-- Check RLS policies
+SELECT schemaname, tablename, policyname 
+FROM pg_policies 
+WHERE schemaname = 'public';
+```
+
+---
+
+## 🐛 Troubleshooting
+
+### Greška: "relation already exists"
+**Rešenje**: Pokreni `supabase/cleanup.sql` prvo
+
+### Greška: "column does not exist" 
+**Rešenje**: ✅ FIXED u novoj verziji `auto-setup.sql`
+
+### Greška: "permission denied"
+**Rešenje**: Koristi Supabase SQL Editor (ima admin prava)
+
+### Greška: "constraint violation"
+**Rešenje**: Proveri da li imaš postojeće podatke koji ne zadovoljavaju constraint
+
+---
+
+## 📝 Files
+
+- `supabase/auto-setup.sql` - Main setup script (FIXED ✅)
+- `supabase/cleanup.sql` - Clean existing tables
+- `supabase/SETUP-GUIDE.md` - This file
+
+---
+
+**Last Updated**: October 5, 2025  
+**Status**: ✅ Ready to use
