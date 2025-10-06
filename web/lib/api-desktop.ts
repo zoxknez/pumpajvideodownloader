@@ -3,11 +3,13 @@
  * Removes IPC/Electron dependencies, keeps HTTP API calls
  */
 
-// API Base - use env var or fallback
+import { getSupabase } from './supabaseClient';
+
+// API Base - use env var or fallback to localhost
 export const API_BASE = 
-  (typeof process !== 'undefined' && process?.env?.NEXT_PUBLIC_API) 
-    ? String(process.env.NEXT_PUBLIC_API) 
-    : 'http://127.0.0.1:5176';
+  (typeof process !== 'undefined' && process?.env?.NEXT_PUBLIC_API_BASE) 
+    ? String(process.env.NEXT_PUBLIC_API_BASE) 
+    : 'http://localhost:5176';
 
 const DEFAULT_TIMEOUT_MS = 20000;
 
@@ -17,8 +19,25 @@ function withTimeout<T>(factory: (signal: AbortSignal) => Promise<T>, ms = DEFAU
   return factory(ac.signal).finally(() => clearTimeout(t));
 }
 
-export function authHeaders(extra?: HeadersInit): HeadersInit {
-  const token = (typeof localStorage !== 'undefined') ? localStorage.getItem('app:token') : null;
+export async function authHeaders(extra?: HeadersInit): Promise<HeadersInit> {
+  // Try to get Supabase token first
+  const supabase = getSupabase();
+  let token: string | null = null;
+  
+  if (supabase) {
+    try {
+      const { data } = await supabase.auth.getSession();
+      token = data.session?.access_token || null;
+    } catch {
+      // Fall through to localStorage
+    }
+  }
+  
+  // Fallback to localStorage (for backward compatibility)
+  if (!token && typeof localStorage !== 'undefined') {
+    token = localStorage.getItem('app:token');
+  }
+  
   const base: Record<string, string> = {};
   if (token) base['Authorization'] = `Bearer ${token}`;
   if (!extra) return base;
@@ -70,9 +89,10 @@ export async function analyzeUrl(url: string): Promise<AnalyzeResponse> {
   if (!/^https?:\/\//i.test(u)) throw new Error('URL must start with http:// or https://');
   
   try {
+    const headers = await authHeaders({ 'Content-Type': 'application/json' });
     const res = await withTimeout<Response>((signal) => fetch(`${API_BASE}/api/analyze`, {
       method: 'POST',
-      headers: authHeaders({ 'Content-Type': 'application/json' }),
+      headers,
       body: JSON.stringify({ url: u }),
       signal,
     }));
@@ -239,21 +259,86 @@ export function mapToThumbnails(json: any) {
   };
 }
 
-// Proxy download (simplified for web - just opens in new tab or downloads via browser)
-export async function proxyDownload(opts: { url: string; filename: string; signal?: AbortSignal }) {
+// Proxy download (simplified for web - browser-based download)
+export type DownloadProgress = {
+  loaded: number;
+  total?: number;
+  percent?: number;
+  speed?: number;
+  eta?: number;
+};
+
+export async function proxyDownload(opts: { 
+  url: string; 
+  filename: string; 
+  signal?: AbortSignal;
+  onProgress?: (p: DownloadProgress) => void;
+}) {
   const u = new URL(`${API_BASE}/api/proxy-download`);
   u.searchParams.set('url', opts.url);
   u.searchParams.set('filename', opts.filename);
   
-  // For web: simply open download URL
-  window.open(u.toString(), '_blank');
+  // For web: attempt fetch with progress tracking if callback provided
+  if (opts.onProgress) {
+    try {
+      const headers = await authHeaders();
+      const res = await fetch(u.toString(), { 
+        signal: opts.signal,
+        headers 
+      });
+      
+      if (!res.ok) throw new Error(`Download failed: ${res.status}`);
+      
+      const total = Number(res.headers.get('content-length') || 0) || undefined;
+      const reader = res.body?.getReader();
+      if (!reader) throw new Error('No response body');
+      
+      const chunks: Uint8Array[] = [];
+      let loaded = 0;
+      const started = Date.now();
+      
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        
+        chunks.push(value);
+        loaded += value.length;
+        
+        const elapsed = (Date.now() - started) / 1000;
+        const speed = elapsed > 0 ? loaded / elapsed : 0;
+        const eta = total && speed > 0 ? (total - loaded) / speed : undefined;
+        const percent = total ? Math.round((loaded / total) * 100) : undefined;
+        
+        opts.onProgress({ loaded, total, percent, speed, eta });
+      }
+      
+      // Create blob and trigger download
+      const blob = new Blob(chunks as BlobPart[]);
+      const blobUrl = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = blobUrl;
+      a.download = opts.filename;
+      a.click();
+      URL.revokeObjectURL(blobUrl);
+      
+    } catch (e: any) {
+      if (e?.name !== 'AbortError') {
+        console.error('Proxy download failed', e);
+      }
+      throw e;
+    }
+  } else {
+    // Simple: just open download URL
+    window.open(u.toString(), '_blank');
+  }
 }
 
 // Job management (simplified)
 export async function startBestJob(url: string, title?: string): Promise<string> {
+  const headers = await authHeaders({ 'Content-Type': 'application/json' });
   const res = await fetch(`${API_BASE}/api/job/start/best`, {
     method: 'POST',
-    headers: authHeaders({ 'Content-Type': 'application/json' }),
+    headers,
     body: JSON.stringify({ url, title }),
   });
   if (!res.ok) throw new Error(`Job start failed: ${res.status}`);
@@ -262,9 +347,10 @@ export async function startBestJob(url: string, title?: string): Promise<string>
 }
 
 export async function startAudioJob(url: string, title?: string, format?: string): Promise<string> {
+  const headers = await authHeaders({ 'Content-Type': 'application/json' });
   const res = await fetch(`${API_BASE}/api/job/start/audio`, {
     method: 'POST',
-    headers: authHeaders({ 'Content-Type': 'application/json' }),
+    headers,
     body: JSON.stringify({ url, title, format }),
   });
   if (!res.ok) throw new Error(`Job start failed: ${res.status}`);
@@ -273,9 +359,10 @@ export async function startAudioJob(url: string, title?: string, format?: string
 }
 
 export async function cancelJob(id: string) {
+  const headers = await authHeaders();
   await fetch(`${API_BASE}/api/job/cancel/${id}`, {
     method: 'POST',
-    headers: authHeaders(),
+    headers,
   });
 }
 
@@ -286,9 +373,10 @@ export function jobFileUrl(id: string): string {
 // Additional functions needed by VideoSection
 export async function isJobFileReady(id: string): Promise<boolean> {
   try {
+    const headers = await authHeaders();
     const res = await fetch(jobFileUrl(id), {
       method: 'HEAD',
-      headers: authHeaders(),
+      headers,
     });
     return res.ok;
   } catch {
@@ -304,9 +392,10 @@ export async function downloadJobFile(id: string, fallbackName?: string): Promis
 
 export async function resolveFormatUrl(sourceUrl: string, formatId: string): Promise<string | null> {
   try {
+    const headers = await authHeaders({ 'Content-Type': 'application/json' });
     const res = await fetch(`${API_BASE}/api/get-url`, {
       method: 'POST',
-      headers: authHeaders({ 'Content-Type': 'application/json' }),
+      headers,
       body: JSON.stringify({ url: sourceUrl, formatId }),
     });
     if (!res.ok) return null;
@@ -362,4 +451,25 @@ export class ProxyDownloadError extends Error {
     this.proxyStatus = opts?.proxyStatus;
     this.requestId = opts?.requestId;
   }
+}
+
+// Settings API
+export async function getJobsSettings(): Promise<any> {
+  const headers = await authHeaders();
+  const res = await fetch(`${API_BASE}/api/jobs/settings`, {
+    method: 'GET',
+    headers,
+  });
+  if (!res.ok) throw new Error(`Failed to get settings: ${res.status}`);
+  return await res.json();
+}
+
+export async function updateJobsSettings(settings: any): Promise<void> {
+  const headers = await authHeaders({ 'Content-Type': 'application/json' });
+  const res = await fetch(`${API_BASE}/api/jobs/settings`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(settings),
+  });
+  if (!res.ok) throw new Error(`Failed to update settings: ${res.status}`);
 }

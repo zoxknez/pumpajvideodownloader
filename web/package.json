@@ -11,25 +11,22 @@
     "start": "next start"
   },
   "dependencies": {
-    "@react-three/drei": "^10.7.6",
-    "@react-three/fiber": "^9.3.0",
-    "@react-three/postprocessing": "^3.0.4",
+    "@sentry/browser": "^10.17.0",
     "@supabase/auth-helpers-nextjs": "^0.10.0",
     "@supabase/ssr": "^0.7.0",
     "@supabase/supabase-js": "^2.58.0",
     "lucide-react": "^0.544.0",
     "next": "15.5.4",
-    "react": "19.1.1",
-    "react-dom": "19.1.1",
-    "three": "^0.180.0"
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0"
   },
   "devDependencies": {
-    "@types/node": "24.5.2",
-    "@types/react": "19.1.13",
-    "@types/react-dom": "19.1.9",
+    "@types/node": "^24.7.0",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
     "autoprefixer": "10.4.21",
     "postcss": "8.5.6",
     "tailwindcss": "3.4.17",
-    "typescript": "5.9.2"
+    "typescript": "^5.9.3"
   }
 }

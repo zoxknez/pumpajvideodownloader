@@ -4,7 +4,8 @@ const config: Config = {
   content: [
     './app/**/*.{js,ts,jsx,tsx,mdx}',
     './components/**/*.{js,ts,jsx,tsx,mdx}',
-    // Removed '../src/**/*' - all components now in web/components/
+    // DESKTOP BACKUP - scan for Tailwind classes from original desktop app
+    '../deskkgui/src/**/*.{js,ts,jsx,tsx}',
   ],
   theme: {
     extend: {},

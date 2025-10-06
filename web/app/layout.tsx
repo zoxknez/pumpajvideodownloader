@@ -4,6 +4,7 @@ import { cookies } from 'next/headers';
 import I18nProvider from '@/components/I18nProvider';
 import { Providers } from './providers';
 
+
 const SUPPORTED_LOCALES = new Set(['sr', 'en']);
 
 function normalizeLocale(raw?: string | null): 'sr' | 'en' {
@@ -61,7 +62,9 @@ export default async function RootLayout({ children }: { children: React.ReactNo
       <body className="pumpaj-page">
         <I18nProvider initialLocale={initialLocale}>
           <Providers>
-            {children}
+            
+              {children}
+            
           </Providers>
         </I18nProvider>
       </body>

@@ -1,7 +1,7 @@
 import React, { useRef, useState } from 'react';
 import { DownloadCard } from './DownloadCard';
-import { Image, Sparkles, Crown, Eye, Download as DownloadIcon } from '@/lib/icons';
-import { proxyDownload, ProxyDownloadError } from '@/lib/api-desktop';
+import { Image, Sparkles, Crown, Eye, Download as DownloadIcon } from 'lucide-react';
+import { proxyDownload } from '@/lib/api-desktop';
 import { useToast } from '@/components/ToastProvider';
 
 export interface ThumbnailSectionProps {
@@ -31,7 +31,7 @@ export const ThumbnailSection: React.FC<ThumbnailSectionProps> = ({ analysisData
   const [thumbEta, setThumbEta] = useState<string>('');
   const [downloading, setDownloading] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
-  const { success, error: toastError } = useToast();
+  const { success } = useToast();
 
   if (analysisData) {
     const thumbnails = analysisData.thumbnails?.map((thumb) => ({
@@ -138,19 +138,17 @@ export const ThumbnailSection: React.FC<ThumbnailSectionProps> = ({ analysisData
             onClick={async () => {
               const chosen = thumbnails[selectedThumbnail];
               if (chosen?.url) {
-                const base = (analysisData.videoTitle || 'thumbnail').replace(/[^\w.-]+/g, '_') || 'thumbnail';
-                const name = `${base}_${chosen.quality}.jpg`;
+                const name = `${analysisData.videoTitle || 'thumbnail'}_${chosen.quality}.jpg`.replace(/[^\w.-]+/g, '_');
                 setDownloading(true); setThumbPct(undefined); setThumbSpeed(''); setThumbEta('');
                 abortRef.current?.abort();
                 abortRef.current = new AbortController();
                 try {
-                  await proxyDownload({ url: chosen.url, filename: name, signal: abortRef.current.signal });
+                  await proxyDownload({ url: chosen.url, filename: name, onProgress: (p) => {
+                    setThumbPct(p.percent);
+                    setThumbSpeed(p.speed ? `${(p.speed / 1024).toFixed(1)} KB/s` : '');
+                    setThumbEta(p.eta ? `${Math.round(p.eta)}s` : '');
+                  }, signal: abortRef.current.signal });
                   success('Saving file…', 'Saving file');
-                } catch (err: any) {
-                  if (err?.name !== 'AbortError') {
-                    const msg = err instanceof ProxyDownloadError ? err.message : 'Thumbnail download failed.';
-                    toastError(msg);
-                  }
                 } finally {
                   setDownloading(false); setTimeout(() => { setThumbPct(undefined); setThumbSpeed(''); setThumbEta(''); }, 1000);
                 }

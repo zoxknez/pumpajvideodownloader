@@ -1,0 +1,197 @@
+/* Shared Pumpaj theme styles */
+
+/* Nice Scrollbar utility */
+.nice-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(99,102,241,0.6) transparent;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable both-edges;
+}
+
+.nice-scroll::-webkit-scrollbar {
+  width: 10px;
+}
+
+.nice-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.nice-scroll::-webkit-scrollbar-thumb {
+  background: linear-gradient(180deg, rgba(59,130,246,0.65), rgba(168,85,247,0.65));
+  border-radius: 9999px;
+  border: 2px solid rgba(15,23,42,0.85);
+}
+
+.nice-scroll:hover::-webkit-scrollbar-thumb {
+  background: linear-gradient(180deg, rgba(59,130,246,0.8), rgba(168,85,247,0.8));
+}
+
+:root {
+  --bg: #0f1115;
+  --panel: #151822;
+  --accent: #7c5cff;
+  --accent-2: #00d4ff;
+  --txt: #e7e9ee;
+  --muted: #9aa3b2;
+  --danger: #ff5c7a;
+  --radius: 12px;
+}
+
+html,
+body,
+#root {
+  background: var(--bg);
+  color: var(--txt);
+}
+
+@keyframes fade-in-up {
+  0% {
+    opacity: 0;
+    transform: translateY(8px) scale(0.98);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.animate-fade-in-up {
+  animation: fade-in-up 0.45s ease both;
+}
+
+@keyframes glow-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgba(59, 130, 246, 0.25);
+  }
+  50% {
+    box-shadow: 0 0 0 6px rgba(168, 85, 247, 0.12);
+  }
+}
+
+.glow-pulse {
+  animation: glow-pulse 2.2s ease-in-out infinite;
+}
+
+@keyframes subtle-pop {
+  0% {
+    transform: scale(0.98);
+    opacity: 0.85;
+  }
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+.animate-pop {
+  animation: subtle-pop 0.25s ease-out both;
+}
+
+@keyframes soft-bounce {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-6%);
+  }
+}
+
+.animate-soft-bounce {
+  animation: soft-bounce 1.6s ease-in-out infinite;
+}
+
+@keyframes wave-pan {
+  0% {
+    background-position: 100% 0;
+  }
+  50% {
+    background-position: 0% 0;
+  }
+  100% {
+    background-position: 100% 0;
+  }
+}
+
+.wave-bg {
+  background-image: linear-gradient(
+    115deg,
+    rgba(37, 99, 235, 0.12) 0%,
+    rgba(168, 85, 247, 0.16) 25%,
+    rgba(168, 85, 247, 0.28) 45%,
+    rgba(168, 85, 247, 0.35) 55%,
+    rgba(168, 85, 247, 0.22) 70%,
+    rgba(59, 130, 246, 0.12) 100%
+  );
+  background-size: 220% 100%;
+  animation: wave-pan-vanish 14s ease-in-out infinite;
+  will-change: background-position, opacity;
+}
+
+@keyframes wave-pan-vanish {
+  0% {
+    background-position: 100% 0;
+    opacity: 1;
+  }
+  45% {
+    background-position: 5% 0;
+    opacity: 0.12;
+  }
+  50% {
+    background-position: 0% 0;
+    opacity: 0;
+  }
+  51% {
+    background-position: 100% 0;
+    opacity: 0;
+  }
+  100% {
+    background-position: 0% 0;
+    opacity: 1;
+  }
+}
+
+@keyframes icon-glow-breathe {
+  0%,
+  100% {
+    --g1: 0;
+    --g2: 0;
+  }
+  50% {
+    --g1: 0.38;
+    --g2: 0.22;
+  }
+}
+
+.icon-glow {
+  --glow: 59, 130, 246;
+  --g1: 0;
+  --g2: 0;
+  filter: drop-shadow(0 0 8px rgba(var(--glow), var(--g1))) drop-shadow(0 0 18px rgba(var(--glow), var(--g2)));
+  animation: icon-glow-breathe 3.6s ease-in-out infinite;
+}
+
+.glow-blue {
+  --glow: 59, 130, 246;
+}
+
+.glow-purple {
+  --glow: 168, 85, 247;
+}
+
+.glow-emerald {
+  --glow: 16, 185, 129;
+}
+
+.glow-cyan {
+  --glow: 6, 182, 212;
+}
+
+.glow-amber {
+  --glow: 245, 158, 11;
+}
+
+.glow-green {
+  --glow: 34, 197, 94;
+}

@@ -1,0 +1,16 @@
+# Vercel Environment Variables Setup Script
+# Copy this file to .env.production in web/ directory
+
+# API Backend URL - Replace with your Railway deployment URL
+NEXT_PUBLIC_API_BASE=https://your-app.railway.app
+
+# Supabase Configuration - Get from Supabase Dashboard → Settings → API
+NEXT_PUBLIC_SUPABASE_URL=https://xxxxx.supabase.co
+NEXT_PUBLIC_SUPABASE_ANON_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+
+# Instructions:
+# 1. Replace URLs and keys with actual values
+# 2. In Vercel dashboard:
+#    - Go to Project Settings → Environment Variables
+#    - Add each variable with "Production" scope
+#    - Trigger redeploy after adding variables

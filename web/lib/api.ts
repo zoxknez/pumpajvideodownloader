@@ -90,3 +90,6 @@ export async function downloadJobFile(jobId: string): Promise<void> {
   a.remove();
   URL.revokeObjectURL(url);
 }
+
+// Re-export helper functions from api-desktop for compatibility
+export { mapToAudioAnalysis, mapToThumbnails, mapToVideoAnalysis, formatDuration } from './api-desktop';

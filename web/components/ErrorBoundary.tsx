@@ -1,45 +1,29 @@
-'use client';
+import { Component, ReactNode } from 'react';
 
-import { Component, ErrorInfo, ReactNode } from 'react';
+type Props = { children: ReactNode };
+type State = { hasError: boolean; message?: string };
 
-type ErrorBoundaryProps = {
-  children: ReactNode;
-  fallback?: (error: Error) => ReactNode;
-};
-
-type ErrorBoundaryState = {
-  error: Error | null;
-};
-
-export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState> {
-  state: ErrorBoundaryState = { error: null };
-
-  static getDerivedStateFromError(error: Error): ErrorBoundaryState {
-    return { error };
+export class ErrorBoundary extends Component<Props, State> {
+  state: State = { hasError: false };
+  static getDerivedStateFromError(err: unknown): State {
+    const msg = err instanceof Error ? err.message : String(err);
+    return { hasError: true, message: msg };
   }
-
-  componentDidCatch(error: Error, info: ErrorInfo): void {
-    if (process.env.NODE_ENV !== 'production') {
-      // eslint-disable-next-line no-console
-      console.error('Uncaught error in ErrorBoundary', error, info);
-    }
+  componentDidCatch(err: unknown) {
+    console.error('UI error', err);
   }
-
   render() {
-    const { error } = this.state;
-    const { children, fallback } = this.props;
-
-    if (error) {
-      return fallback?.(error) ?? (
-        <div className="rounded-3xl border border-rose-500/40 bg-rose-500/10 p-6 text-sm text-rose-100">
-          <h2 className="text-lg font-semibold">Nešto je pošlo po zlu</h2>
-          <p className="mt-2 opacity-90">
-            Pokušajte ponovo osvežavanjem stranice. Ako problem ostane, proverite logove servera.
-          </p>
+    if (this.state.hasError) {
+      return (
+        <div className="min-h-screen grid place-items-center bg-slate-900 text-slate-200 p-6">
+          <div className="max-w-lg w-full bg-slate-800/70 border border-slate-700 rounded-xl p-6">
+            <h1 className="text-xl font-semibold mb-2">Something went wrong</h1>
+            <p className="text-slate-400 text-sm mb-4">{this.state.message}</p>
+            <button className="px-4 py-2 rounded-lg bg-slate-700 hover:bg-slate-600" onClick={() => location.reload()}>Reload</button>
+          </div>
         </div>
       );
     }
-
-    return children;
+    return this.props.children;
   }
 }

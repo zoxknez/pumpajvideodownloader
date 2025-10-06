@@ -119,7 +119,7 @@ export default function DownloaderDemo() {
         if (attempt < maxAttempts && transient) {
           // backoff 250ms, 750ms
           const waitMs = 250 * attempt * (attempt === 1 ? 1 : 3);
-          toastError(`Privremeni problem sa serverom. Pokušavam ponovo (${attempt}/${maxAttempts})…`, 'Ponovni pokušaj', { type: 'info', durationMs: Math.max(2000, waitMs + 500) } as any);
+          toastError(`Privremeni problem sa serverom. Pokušavam ponovo (${attempt}/${maxAttempts})…`, 'Ponovni pokušaj');
           await new Promise((r) => setTimeout(r, waitMs)); // 250, 750
           continue;
         }
@@ -162,7 +162,7 @@ export default function DownloaderDemo() {
       } catch (err: any) {
         if (sseAttempt < maxSseAttempts) {
           const delay = Math.min(1000 * sseAttempt, 3000);
-          toastError(`Veza je prekinuta. Pokušaj ${sseAttempt + 1}/${maxSseAttempts} za ${delay}ms…`, 'Ponovno povezivanje', { type: 'info', durationMs: delay + 500 } as any);
+          toastError(`Veza je prekinuta. Pokušaj ${sseAttempt + 1}/${maxSseAttempts} za ${delay}ms…`, 'Ponovno povezivanje');
           await new Promise((r) => setTimeout(r, delay));
           return trySubscribe();
         }

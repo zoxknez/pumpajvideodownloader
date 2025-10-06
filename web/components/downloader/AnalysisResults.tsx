@@ -2,8 +2,8 @@ import React, { useMemo } from 'react';
 import { AudioSection } from './AudioSection';
 import { VideoSection } from './VideoSection';
 import { AdvancedOptionsSection } from './AdvancedOptionsSection';
-import { ArrowLeft, BarChart3 } from '@/lib/icons';
-import { mapToAudioAnalysis, mapToThumbnails, mapToVideoAnalysis, formatDuration } from '@/lib/api-desktop';
+import { ArrowLeft, BarChart3 } from 'lucide-react';
+import { mapToAudioAnalysis, mapToThumbnails, mapToVideoAnalysis, formatDuration } from '@/lib/api';
 
 interface AnalysisResultsProps {
   onBack: () => void;

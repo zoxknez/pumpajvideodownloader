@@ -57,3 +57,8 @@ server/dist/
 !.env.example
 !server/.env.example
 !web/.env.example
+
+# Large backup files
+*.zip
+*-Complete-*.zip
+pumpaj-desktop-backup.zip

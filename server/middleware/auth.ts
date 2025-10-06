@@ -1,8 +1,10 @@
 import type { Request, Response, NextFunction } from 'express';
 import { verifyAppJwt } from '../core/jwksVerify.js';
 import { getActiveUser } from '../storage/usersRepo.js';
+import jwt from 'jsonwebtoken';
 
 const AUTH_COOKIE = process.env.AUTH_COOKIE_NAME || 'pumpaj_session';
+const SUPABASE_JWT_SECRET = process.env.SUPABASE_JWT_SECRET || '';
 
 function extractTokenFromCookie(header?: string | string[]): string | null {
   if (!header) return null;
@@ -33,6 +35,27 @@ export function requireAuth(req: Authed, res: Response, next: NextFunction) {
       token = extractTokenFromCookie(req.headers.cookie);
     }
     if (!token) return res.status(401).json({ error: 'unauthorized' });
+
+    // Try Supabase JWT first if SUPABASE_JWT_SECRET is set
+    if (SUPABASE_JWT_SECRET) {
+      try {
+        const supabaseClaims = jwt.verify(token, SUPABASE_JWT_SECRET) as any;
+        console.log('[AUTH] Supabase JWT verified:', { sub: supabaseClaims.sub, email: supabaseClaims.email });
+        req.user = {
+          id: String(supabaseClaims.sub),
+          email: supabaseClaims.email,
+          username: supabaseClaims.user_metadata?.full_name || supabaseClaims.email?.split('@')[0],
+          plan: 'PREMIUM', // Default to PREMIUM for Supabase users
+          planExpiresAt: null,
+        };
+        return next();
+      } catch (err: any) {
+        console.log('[AUTH] Supabase JWT failed:', err.message, '| Token preview:', token.substring(0, 50));
+        // If Supabase verification fails, fall through to app JWT verification
+      }
+    }
+
+    // Fall back to app JWT verification
     const claims = verifyAppJwt(token);
     const stored = getActiveUser(String(claims.sub));
     const plan = stored?.plan ?? ((claims as any).plan === 'PREMIUM' ? 'PREMIUM' : 'FREE');

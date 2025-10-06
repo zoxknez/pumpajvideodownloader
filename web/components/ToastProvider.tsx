@@ -1,111 +1,82 @@
-'use client';
+/* eslint-disable react-refresh/only-export-components */
+import React, { createContext, useCallback, useContext, useMemo, useState } from 'react';
+import { useClientSettings } from './SettingsContext';
 
-import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
-
-type ToastKind = 'success' | 'error' | 'info';
-
-type ToastPayload = {
-  message: string;
+type ToastType = 'success' | 'error' | 'info' | 'warning';
+export type ToastOptions = {
+  id?: string;
   title?: string;
-  kind?: ToastKind;
+  message: string;
+  type?: ToastType;
   durationMs?: number;
 };
 
-type ToastContextValue = {
-  success: (message: string, title?: string, options?: Partial<Pick<ToastPayload, 'durationMs'>>) => void;
-  error: (message: string, title?: string, options?: Partial<Pick<ToastPayload, 'durationMs'>>) => void;
-  info: (message: string, title?: string, options?: Partial<Pick<ToastPayload, 'durationMs'>>) => void;
-};
+type ToastItem = Required<Omit<ToastOptions, 'durationMs'>> & { durationMs: number };
 
-type InternalToast = ToastPayload & { id: number; kind: ToastKind };
+const ToastCtx = createContext<{
+  show: (opts: ToastOptions) => string;
+  dismiss: (id: string) => void;
+} | null>(null);
 
-const ToastContext = createContext<ToastContextValue | null>(null);
+export const ToastProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const { settings } = useClientSettings();
+  const [toasts, setToasts] = useState<ToastItem[]>([]);
 
-const DEFAULT_DURATION = 4000;
-
-function useToastQueue() {
-  const [items, setItems] = useState<InternalToast[]>([]);
-  const counterRef = useRef(0);
-  const timersRef = useRef<Map<number, number>>(new Map());
-
-  const remove = useCallback((id: number) => {
-    setItems((prev) => prev.filter((item) => item.id !== id));
-    const timerId = timersRef.current.get(id);
-    if (timerId) {
-      window.clearTimeout(timerId);
-      timersRef.current.delete(id);
-    }
+  const dismiss = useCallback((id: string) => {
+    setToasts((prev) => prev.filter((t) => t.id !== id));
   }, []);
 
-  const push = useCallback((payload: ToastPayload & { kind: ToastKind }) => {
-    counterRef.current += 1;
-    const id = counterRef.current;
-    const duration = Math.max(1000, payload.durationMs ?? DEFAULT_DURATION);
+  const show = useCallback((opts: ToastOptions) => {
+    // respect user settings
+    if (settings && settings.showNotifications === false) return Math.random().toString(36).slice(2);
+    const id = opts.id || Math.random().toString(36).slice(2);
+    const item: ToastItem = {
+      id,
+      title: opts.title || '',
+      message: opts.message,
+      type: opts.type || 'info',
+      durationMs: Math.max(1500, Math.min(10000, opts.durationMs ?? 4000)),
+    };
+    setToasts((prev) => [...prev, item]);
+    // auto dismiss
+    setTimeout(() => dismiss(id), item.durationMs);
+    return id;
+  }, [dismiss, settings]);
 
-    setItems((prev) => [...prev, { ...payload, id }]);
+  const value = useMemo(() => ({ show, dismiss }), [show, dismiss]);
 
-    const timerId = window.setTimeout(() => remove(id), duration);
-    timersRef.current.set(id, timerId);
-  }, [remove]);
-
-  useEffect(() => () => {
-    for (const timerId of timersRef.current.values()) {
-      window.clearTimeout(timerId);
-    }
-    timersRef.current.clear();
-  }, []);
-
-  return { items, push, remove } as const;
-}
-
-const kindStyles: Record<ToastKind, string> = {
-  success: 'border-emerald-400/40 bg-emerald-500/20 text-emerald-100',
-  error: 'border-rose-400/40 bg-rose-500/25 text-rose-50',
-  info: 'border-blue-400/40 bg-blue-500/25 text-blue-50',
-};
-
-export function ToastProvider({ children }: { children: React.ReactNode }) {
-  const { items, push, remove } = useToastQueue();
-
-  const contextValue = useMemo<ToastContextValue>(() => ({
-    success: (message, title, options) => push({ message, title, kind: 'success', durationMs: options?.durationMs }),
-    error: (message, title, options) => push({ message, title, kind: 'error', durationMs: options?.durationMs }),
-    info: (message, title, options) => push({ message, title, kind: 'info', durationMs: options?.durationMs }),
-  }), [push]);
+  const color = (t: ToastType) =>
+    t === 'success' ? 'from-emerald-600 to-green-600 border-emerald-500/40' :
+    t === 'error' ? 'from-rose-600 to-red-600 border-red-500/40' :
+    t === 'warning' ? 'from-amber-600 to-yellow-600 border-amber-500/40' :
+    'from-blue-600 to-cyan-600 border-blue-500/40';
 
   return (
-    <ToastContext.Provider value={contextValue}>
+    <ToastCtx.Provider value={value}>
       {children}
-      <div className="pointer-events-none fixed bottom-4 right-4 z-[2000] flex w-full max-w-sm flex-col gap-3">
-        {items.map((toast) => (
-          <div
-            key={toast.id}
-            className={`pointer-events-auto overflow-hidden rounded-2xl border bg-slate-950/80 backdrop-blur px-4 py-3 shadow-2xl transition ${kindStyles[toast.kind]}`}
-          >
-            <div className="flex items-start gap-3">
-              <div className="flex-1 min-w-0">
-                {toast.title && <div className="text-sm font-semibold leading-tight">{toast.title}</div>}
-                <div className="text-xs leading-snug opacity-90 break-words">{toast.message}</div>
-              </div>
-              <button
-                type="button"
-                onClick={() => remove(toast.id)}
-                className="text-[11px] font-semibold uppercase tracking-wide text-white/70 hover:text-white"
-              >
-                zatvori
-              </button>
-            </div>
+      <div className="fixed top-4 right-4 z-[1000] space-y-3">
+        {toasts.map((t) => (
+          <div key={t.id} className={`min-w-[260px] max-w-[380px] p-4 rounded-xl shadow-xl text-white bg-gradient-to-br border ${color(t.type)} backdrop-blur`}> 
+            {t.title && <div className="font-semibold mb-1">{t.title}</div>}
+            <div className="text-sm opacity-95">{t.message}</div>
+            <button onClick={() => dismiss(t.id)} className="absolute top-1 right-2 text-white/70 hover:text-white text-xs">✕</button>
           </div>
         ))}
       </div>
-    </ToastContext.Provider>
+    </ToastCtx.Provider>
   );
-}
+};
 
-export function useToast(): ToastContextValue {
-  const ctx = useContext(ToastContext);
-  if (!ctx) {
-    throw new Error('useToast must be used inside ToastProvider');
-  }
-  return ctx;
+export function useToast() {
+  const ctx = useContext(ToastCtx);
+  if (!ctx) throw new Error('useToast must be used within ToastProvider');
+  const { show, dismiss } = ctx;
+  return {
+    toast: show,
+    dismiss,
+    success: (message: string, title = 'Success') => show({ message, title, type: 'success' }),
+    error: (message: string, title = 'Error') => show({ message, title, type: 'error' }),
+    info: (message: string, title = 'Info') => show({ message, title, type: 'info' }),
+    warning: (message: string, title = 'Warning') => show({ message, title, type: 'warning' }),
+  };
 }

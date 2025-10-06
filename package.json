@@ -12,5 +12,9 @@
     "lint": "npm run lint -w web --if-present",
     "test": "npm run test -w web --if-present",
     "typecheck": "npm run typecheck -w web --if-present"
+  },
+  "dependencies": {
+    "axios": "^1.12.2",
+    "hostinger-api-sdk": "^0.0.17"
   }
 }
