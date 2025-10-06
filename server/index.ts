@@ -97,6 +97,7 @@ const corsOptions: CorsOptions = {
     'X-Req-Id',
     'x-req-id',
     'X-Request-Id',
+    'X-Client-Trace',
     'Traceparent',
     'traceparent',
     'X-Traceparent',
