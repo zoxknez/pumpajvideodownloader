@@ -22,7 +22,7 @@ const nextConfig = {
   },
   // API Proxy - forward requests to backend (Railway)
   async rewrites() {
-    const apiBase = process.env.NEXT_PUBLIC_API_BASE || 'http://localhost:5176';
+    const apiBase = process.env.NEXT_PUBLIC_API_BASE || 'https://pumpajvideodownloader-production.up.railway.app';
     return [
       {
         source: '/api/:path*',
