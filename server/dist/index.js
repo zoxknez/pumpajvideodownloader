@@ -2,7 +2,6 @@
 // ESM + TypeScript (Node 18+). Zadržava postojeći API i ponašanje.
 import express, {} from 'express';
 import rateLimit from 'express-rate-limit';
-import cors from 'cors';
 import ytdlp from 'youtube-dl-exec';
 import path from 'node:path';
 import { Readable } from 'node:stream';
@@ -74,37 +73,23 @@ applySecurity(app, process.env.CORS_ORIGIN);
 // Global
 const limiter = rateLimit({ windowMs: 60000, max: 120 });
 app.use(limiter);
-// CORS
-const corsOptions = {
-    origin: buildCorsOrigin(process.env.CORS_ORIGIN),
-    credentials: true,
-    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS', 'HEAD'],
-    allowedHeaders: [
-        'Content-Type',
-        'Authorization',
-        'Accept',
-        'X-Requested-With',
-        'X-Req-Id',
-        'x-req-id',
-        'X-Request-Id',
-        'X-Client-Trace',
-        'Traceparent',
-        'traceparent',
-        'X-Traceparent',
-    ],
-    exposedHeaders: ['Content-Disposition', 'Content-Length', 'Content-Type', 'X-Request-Id', 'Proxy-Status', 'Retry-After', 'X-Traceparent'],
-    maxAge: 86400,
-};
-app.use(cors(corsOptions));
+// Manual CORS implementation - cors package was not deploying correctly to Railway
 app.use((req, res, next) => {
+    const origin = req.headers.origin;
+    const allowedOrigins = buildCorsOrigin(process.env.CORS_ORIGIN);
+    if (origin && (allowedOrigins === true || (Array.isArray(allowedOrigins) && allowedOrigins.includes(origin)))) {
+        res.setHeader('Access-Control-Allow-Origin', origin);
+    }
+    res.setHeader('Access-Control-Allow-Credentials', 'true');
+    res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS,HEAD');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type,Authorization,Accept,X-Requested-With,X-Req-Id,x-req-id,X-Request-Id,X-Client-Trace,Traceparent,traceparent,X-Traceparent');
+    res.setHeader('Access-Control-Expose-Headers', 'Content-Disposition,Content-Length,Content-Type,X-Request-Id,Proxy-Status,Retry-After,X-Traceparent');
+    res.setHeader('Access-Control-Max-Age', '86400');
+    res.setHeader('Vary', 'Origin');
     if (req.method === 'OPTIONS') {
         res.status(204).end();
         return;
     }
-    next();
-});
-app.use((_req, res, next) => {
-    res.setHeader('Vary', 'Origin');
     next();
 });
 // Minimalna HPP sanitizacija (query samo 1 vrednost po ključu)

@@ -3,8 +3,6 @@
 
 import express, { type Response, type NextFunction } from 'express';
 import rateLimit from 'express-rate-limit';
-import cors from 'cors';
-import type { CorsOptions } from 'cors';
 import ytdlp from 'youtube-dl-exec';
 import path from 'node:path';
 import { Readable } from 'node:stream';
@@ -83,28 +81,6 @@ applySecurity(app, process.env.CORS_ORIGIN);
 // Global
 const limiter = rateLimit({ windowMs: 60_000, max: 120 });
 app.use(limiter);
-
-// CORS
-const corsOptions: CorsOptions = {
-  origin: buildCorsOrigin(process.env.CORS_ORIGIN),
-  credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS', 'HEAD'],
-  allowedHeaders: [
-    'Content-Type',
-    'Authorization',
-    'Accept',
-    'X-Requested-With',
-    'X-Req-Id',
-    'x-req-id',
-    'X-Request-Id',
-    'X-Client-Trace',
-    'Traceparent',
-    'traceparent',
-    'X-Traceparent',
-  ],
-  exposedHeaders: ['Content-Disposition', 'Content-Length', 'Content-Type', 'X-Request-Id', 'Proxy-Status', 'Retry-After', 'X-Traceparent'],
-  maxAge: 86400,
-};
 
 // Manual CORS implementation - cors package was not deploying correctly to Railway
 app.use((req, res, next) => {
