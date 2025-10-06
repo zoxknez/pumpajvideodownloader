@@ -3,8 +3,7 @@
  */
 
 export function initSentry(): void {
-  // Sentry disabled for web version
-  console.log('[Sentry] Telemetry disabled for web version');
+  // Sentry disabled for web version (no-op)
 }
 
 export function captureSentryException(error: any, context?: any): void {

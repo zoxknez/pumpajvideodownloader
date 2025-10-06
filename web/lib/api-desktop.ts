@@ -526,7 +526,7 @@ export async function downloadJobFile(id: string, fallbackName = 'download.bin')
       await saveWithFileSystem(res, filename);
       return true;
     } catch (err) {
-      console.warn('File System Access fallback', err);
+      // File System Access API not available, fallback to blob download
     }
   }
 

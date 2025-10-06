@@ -70,26 +70,28 @@ export function subscribeJobProgressEnhanced(
           cleanup();
         }
       } catch (err) {
-        console.error('[SSE] Parse error:', err);
+        // SSE parse error (silently handled)
       }
     };
 
     eventSource.onerror = (err) => {
-      console.error('[SSE] Connection error:', err);
+      // SSE connection error (handled by onComplete)
       if (!isClosed) {
         onComplete('failed');
         cleanup();
       }
     };
 
-    console.log(`[SSE] Connected to job ${jobId}`);
+    // Handle 'end' event to prevent memory leaks
+    eventSource.addEventListener('end', () => {
+      cleanup();
+    });
   }
 
   function cleanup() {
     if (eventSource) {
       eventSource.close();
       eventSource = null;
-      console.log(`[SSE] Disconnected from job ${jobId}`);
     }
   }
 
@@ -98,11 +100,9 @@ export function subscribeJobProgressEnhanced(
 
     if (document.hidden) {
       // Tab hidden: close connection to save resources
-      console.log('[SSE] Tab hidden, closing connection');
       cleanup();
     } else if (autoReconnect && !eventSource && !isClosed && lastStatus !== 'completed') {
       // Tab visible again: reconnect if not completed
-      console.log('[SSE] Tab visible, reconnecting');
       connect();
     }
   }

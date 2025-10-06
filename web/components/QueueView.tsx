@@ -90,7 +90,7 @@ export default function QueueView() {
           loadQueue();
         }
       } catch (err) {
-        console.error('SSE parse error:', err);
+        // SSE parse error (silently handled)
       }
     };
 
@@ -98,6 +98,12 @@ export default function QueueView() {
       sse.close();
       sseConnections.delete(jobId);
     };
+
+    // Handle 'end' event to prevent memory leaks
+    sse.addEventListener('end', () => {
+      sse.close();
+      sseConnections.delete(jobId);
+    });
 
     sseConnections.set(jobId, sse);
   }, [loadQueue, sseConnections]);

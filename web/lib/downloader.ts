@@ -14,9 +14,9 @@ export function onDoneIpc(callback: (data: any) => void): () => void {
 }
 
 export function revealPath(path: string) {
-  console.log('Reveal path (not available in web):', path);
+  // No-op in web environment
 }
 
 export function openPath(path: string) {
-  console.log('Open path (not available in web):', path);
+  // No-op in web environment
 }

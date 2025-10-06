@@ -18,9 +18,6 @@ export default function AuthCallback() {
       }
 
       try {
-        console.log('🔍 OAuth callback started');
-        console.log('🔍 Full URL:', window.location.href);
-        
         setStatus('🔄 Processing authentication...');
 
         // Parse tokens from URL hash
@@ -30,70 +27,49 @@ export default function AuthCallback() {
         const error = hashParams.get('error');
         const error_description = hashParams.get('error_description');
 
-        console.log('🔍 Access token found:', access_token ? 'YES' : 'NO');
-        console.log('🔍 Refresh token found:', refresh_token ? 'YES' : 'NO');
-
         if (error) {
-          console.error('❌ OAuth error:', error, error_description);
           setStatus(`❌ ${error_description || error}`);
           setTimeout(() => router.push(`/?error=${encodeURIComponent(error_description || error)}`), 2000);
           return;
         }
 
         if (access_token && refresh_token) {
-          console.log('🔄 Setting session with tokens...');
-          console.log('🔍 Access token (first 50 chars):', access_token.substring(0, 50));
-          console.log('🔍 Refresh token:', refresh_token);
-          
           // Set the session manually with the tokens from URL
           const { data, error: setError } = await supabase.auth.setSession({
             access_token,
             refresh_token,
           });
 
-          console.log('📦 setSession response:', { data, error: setError });
-
           if (setError) {
-            console.error('❌ Set session error:', setError);
             setStatus(`❌ ${setError.message}`);
             setTimeout(() => router.push(`/?error=${encodeURIComponent(setError.message)}`), 2000);
             return;
           }
 
           if (data.session) {
-            console.log('✅ Session set successfully!');
-            console.log('✅ User:', data.session.user.email);
-            console.log('✅ Session expires at:', new Date(data.session.expires_at! * 1000).toLocaleString());
             setStatus(`✅ Logged in as ${data.session.user.email}`);
             
             // Give time for session to propagate to AuthProvider
             setTimeout(() => {
-              console.log('🔄 Redirecting to home...');
               router.push('/?auth=success');
             }, 1000);
             return;
-          } else {
-            console.warn('⚠️ setSession returned no session!');
-            console.log('⚠️ Data:', data);
           }
         }
 
         // No tokens in URL - check if we already have a session
         const { data: sessionData } = await supabase.auth.getSession();
         if (sessionData.session) {
-          console.log('✅ Already have session:', sessionData.session.user.email);
           setStatus(`✅ Already logged in as ${sessionData.session.user.email}`);
           setTimeout(() => router.push('/'), 1000);
           return;
         }
 
         // No tokens and no session
-        console.log('⚠️ No authentication data found');
         setStatus('⚠️ No authentication data found');
         setTimeout(() => router.push('/'), 2000);
 
       } catch (err: any) {
-        console.error('❌ Auth callback error:', err);
         setStatus(`❌ ${err.message || 'Authentication failed'}`);
         setTimeout(() => router.push('/?error=authentication_failed'), 2000);
       }

@@ -72,7 +72,7 @@ export async function requestDirectoryPicker(): Promise<MockDirHandle | null> {
       };
     } catch (err) {
       // User cancelled or browser doesn't support
-      console.log('[fsStore] Directory picker cancelled or unsupported');
+      // Directory picker cancelled or unsupported
       return null;
     }
   }

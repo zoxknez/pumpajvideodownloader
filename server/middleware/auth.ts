@@ -44,7 +44,6 @@ export function requireAuth(req: Authed, res: Response, next: NextFunction) {
       if (SUPABASE_JWT_SECRET) {
         try {
           const supabaseClaims = jwt.verify(token, SUPABASE_JWT_SECRET) as any;
-          console.log('[AUTH] Supabase JWT verified:', { sub: supabaseClaims.sub, email: supabaseClaims.email });
           req.user = {
             id: String(supabaseClaims.sub),
             email: supabaseClaims.email,
@@ -55,7 +54,6 @@ export function requireAuth(req: Authed, res: Response, next: NextFunction) {
           };
           return next();
         } catch (err: any) {
-          console.log('[AUTH] Supabase JWT failed:', err.message, '| Token preview:', token.substring(0, 50));
           // If Supabase verification fails, fall through to remote verification / app JWT
         }
       }
@@ -80,11 +78,9 @@ export function requireAuth(req: Authed, res: Response, next: NextFunction) {
             };
             return next();
           }
-          if (error) {
-            console.warn('[AUTH] Supabase remote verification failed:', error.message);
-          }
+          // Supabase remote verification failed, fallback to app JWT
         } catch (err) {
-          console.warn('[AUTH] Supabase remote verification error:', err);
+          // Supabase remote verification error, fallback to app JWT
         }
       }
 
