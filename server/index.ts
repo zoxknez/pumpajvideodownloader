@@ -108,6 +108,8 @@ const corsOptions: CorsOptions = {
 app.use(cors(corsOptions));
 app.use((req, res, next) => {
   if (req.method === 'OPTIONS') {
+    // Explicit CORS headers for debugging Railway deployment issue
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type,Authorization,Accept,X-Requested-With,X-Req-Id,x-req-id,X-Request-Id,X-Client-Trace,Traceparent,traceparent,X-Traceparent');
     res.status(204).end();
     return;
   }
