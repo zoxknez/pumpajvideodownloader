@@ -29,7 +29,7 @@ export type Policy = {
   speedLimitKbps?: number;
 };
 
-type User = { id: string; email?: string; username?: string; plan: Plan } | null;
+type User = ({ id: string; email?: string; username?: string; plan: Plan; guest?: boolean }) | null;
 type LoginPayload = { username: string; password: string };
 type RegisterPayload = { username: string; password: string; email?: string };
 
@@ -65,6 +65,7 @@ type AuthCtx = {
   loading: boolean;
   login: (payload: LoginPayload) => Promise<void>;
   register: (payload: RegisterPayload) => Promise<void>;
+  loginGuest: () => Promise<void>;
   logout: () => Promise<void>;
   setToken: (value: string | null) => void;
 };
@@ -95,6 +96,7 @@ export type Translation = {
     features: Array<{ icon: string; title: string; description: string }>;
     benefits: Array<{ title: string; description: string }>;
     security: { title: string; features: string[] };
+    guest: { button: string; tooltip: string; disclaimer: string };
   };
   register: {
     badge: string;
@@ -144,7 +146,7 @@ const UI_COPY: Record<UiLanguage, Translation> = {
         { icon: '🎵', label: '8K kvalitet' },
         { icon: '🚀', label: 'Neograničena brzina' },
       ],
-  premiumBadgeLabel: 'FREE PREMIUM',
+    premiumBadgeLabel: 'FREE PREMIUM',
       highlights: [
         { title: 'Ultra brzi download', desc: 'Bez ograničenja brzine za svaki nalog.' },
         { title: 'Batch & Queue magija', desc: 'Pametno upravljanje redovima, pauza i nastavak.' },
@@ -173,6 +175,11 @@ const UI_COPY: Record<UiLanguage, Translation> = {
         { title: 'Batch i queue sistem', description: 'Dodaj stotine URL-ova odjednom, pauziraj i nastavi kad hoćeš.' },
         { title: 'Sigurnost na prvom mestu', description: 'Lokalno čuvanje fajlova, bez deljenja sa trećim stranama.' },
       ],
+      guest: {
+        button: 'Uđi kao gost',
+        tooltip: 'Privremeni nalog bez registracije',
+        disclaimer: 'Gost nalog traje 2 sata i koristi FREE ograničenja plana.',
+      },
       security: {
         title: 'Bezbednost i privatnost',
         features: [
@@ -301,6 +308,11 @@ const UI_COPY: Record<UiLanguage, Translation> = {
         { title: 'Batch and queue system', description: 'Add hundreds of URLs at once, pause and resume anytime.' },
         { title: 'Security first', description: 'Local file storage, no sharing with third parties.' },
       ],
+      guest: {
+        button: 'Continue as guest',
+        tooltip: 'Temporary account without registration',
+        disclaimer: 'Guest sessions last 2 hours and follow the FREE plan limits.',
+      },
       security: {
         title: 'Security and privacy',
         features: [
@@ -622,6 +634,43 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     try { localStorage.setItem('app:lastUsername', name); } catch {}
   }, [isIpc, fetchMeBearer, fetchMeCookie, setToken]);
 
+  const loginGuest = useCallback(async () => {
+    if (isIpc) {
+      const api = (window as any).api?.auth;
+      if (!api?.guest) throw new Error('guest_not_supported');
+      const res = await api.guest();
+      if (!res?.ok) throw new Error(res?.error || 'guest_failed');
+      const user = normalizeUser(res.user);
+      setMe(user);
+      setPolicy(user ? derivePolicy(user.plan) : null);
+      if (res.token) setToken(res.token);
+      return;
+    }
+
+    const res = await fetch(authUrl('/guest'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+    });
+
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data?.error || `guest_failed_${res.status}`);
+    }
+
+    const data = await res.json().catch(() => ({}));
+    if (data?.token) setToken(data.token);
+    if (data?.user || data?.policy) {
+      applyUser(data);
+      return;
+    }
+    if (data?.token) {
+      await fetchMeBearer(data.token);
+    } else {
+      await fetchMeCookie();
+    }
+  }, [isIpc, setToken, applyUser, fetchMeBearer, fetchMeCookie]);
+
   const register = useCallback(async ({ username, password, email }: RegisterPayload) => {
     const name = String(username || '').trim();
     const mail = email ? String(email).trim() : undefined;
@@ -685,8 +734,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [isIpc, setToken]);
 
   const ctxValue = useMemo(
-    () => ({ me, policy, token, loading, login, register, logout, setToken }),
-    [me, policy, token, loading, login, register, logout, setToken],
+    () => ({ me, policy, token, loading, login, register, loginGuest, logout, setToken }),
+    [me, policy, token, loading, login, register, loginGuest, logout, setToken],
   );
 
   return <Ctx.Provider value={ctxValue}>{children}</Ctx.Provider>;
@@ -708,7 +757,7 @@ export function usePolicy(defaultPlan: Plan = 'PREMIUM') {
 /* ============================ Login Gate (UI) ============================ */
 
 export function LoginGate({ children }: { children: React.ReactNode }) {
-  const { me, login, register, loading } = useAuth();
+  const { me, login, register, loginGuest, loading } = useAuth();
   const isBrowser = typeof window !== 'undefined';
   const isIpc = isBrowser && Boolean((window as any).api?.auth);
   const { locale, setLocale } = useI18n();
@@ -730,6 +779,7 @@ export function LoginGate({ children }: { children: React.ReactNode }) {
   const quickLoginLabel = language === 'sr' ? 'Brza prijava i registracija' : 'Quick social login';
   const quickLoginSeparator = language === 'sr' ? 'ili koristi email' : 'or use email';
   const instructionText = mode === 'login' ? copy.instructions.login : copy.instructions.register;
+  const instructionLabel = language === 'sr' ? 'Anonimna prijava' : 'Anonymous login';
   const activeFormCopy = mode === 'login' ? copy.login : copy.register;
   const showcaseSlides = copy.appShowcase.slides;
   const activeShowcase = useMemo(
@@ -765,6 +815,7 @@ export function LoginGate({ children }: { children: React.ReactNode }) {
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  const [guestLoading, setGuestLoading] = useState(false);
   const [showPumpajInfo, setShowPumpajInfo] = useState(false);
   const autoOpenTriggered = useRef(false);
 
@@ -833,6 +884,20 @@ export function LoginGate({ children }: { children: React.ReactNode }) {
       setSubmitting(false);
     }
   }, [language, copy.errors.operationFailed]);
+
+  const handleGuestLogin = useCallback(async () => {
+    setError('');
+    setGuestLoading(true);
+    try {
+      await loginGuest();
+    } catch (e: any) {
+      console.error('Guest login error:', e);
+      const message = e?.message ? String(e.message) : copy.errors.operationFailed;
+      setError(message === 'guest_not_supported' ? (language === 'sr' ? 'Gost nalog nije podržan u desktop aplikaciji.' : 'Guest mode is not available in the desktop app.') : message);
+    } finally {
+      setGuestLoading(false);
+    }
+  }, [loginGuest, copy.errors.operationFailed, language]);
 
   const handleSubmit = async () => {
     setError('');
@@ -1128,11 +1193,14 @@ export function LoginGate({ children }: { children: React.ReactNode }) {
                 {/* form - spuštena niže ali ne skroz */}
                 <div className="flex-1 flex flex-col justify-start pt-4">
                   <div className="space-y-3 mt-2">
-                    <div className="rounded-xl border border-white/15 bg-white/5 px-4 py-3 text-xs text-white/70 leading-relaxed flex items-start gap-2">
-                      <span className="text-lg">💡</span>
-                      <p>
-                        {instructionText}
-                      </p>
+                    <div className="rounded-xl border border-white/15 bg-white/5 px-4 py-3 text-xs text-white/70 leading-relaxed flex items-start gap-3">
+                      <span className="text-lg mt-0.5">💡</span>
+                      <div className="space-y-1">
+                        <div className="text-[11px] font-semibold uppercase tracking-[0.2em] text-white/70">
+                          {instructionLabel}
+                        </div>
+                        <p>{instructionText}</p>
+                      </div>
                     </div>
                     <input
                       id="auth-username"
@@ -1244,6 +1312,29 @@ export function LoginGate({ children }: { children: React.ReactNode }) {
                           Facebook
                         </button>
                       </div>
+                      <div className="flex flex-col gap-2 pt-1">
+                        <button
+                          onClick={handleGuestLogin}
+                          disabled={guestLoading || submitting}
+                          className="flex items-center justify-center gap-2 w-full px-3 py-2.5 rounded-lg border border-emerald-400/40 bg-emerald-500/20 hover:bg-emerald-500/30 transition-all text-sm text-emerald-100 font-semibold shadow-lg shadow-emerald-500/20 disabled:opacity-60 disabled:cursor-not-allowed"
+                          title={copy.login.guest.tooltip}
+                        >
+                          {guestLoading ? (
+                            <>
+                              <div className="w-4 h-4 border-2 border-white/40 border-t-white rounded-full animate-spin" />
+                              {language === 'sr' ? 'Povezivanje…' : 'Connecting…'}
+                            </>
+                          ) : (
+                            <>
+                              <span className="text-lg">👻</span>
+                              {copy.login.guest.button}
+                            </>
+                          )}
+                        </button>
+                        <p className="text-[11px] text-white/60 text-center leading-snug">
+                          {copy.login.guest.disclaimer}
+                        </p>
+                      </div>
                       <div className="text-center">
                         <div className="flex items-center gap-3">
                           <div className="h-px flex-1 bg-white/20"></div>
@@ -1332,6 +1423,7 @@ function normalizeUser(raw: any): User {
     email: raw.email || undefined,
     username: raw.username || undefined,
     plan,
+    guest: raw.guest ? Boolean(raw.guest) : undefined,
   };
 }
 

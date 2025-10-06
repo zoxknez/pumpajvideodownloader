@@ -2,6 +2,8 @@
 
 import { useCallback, useEffect, useState, type ReactNode } from 'react';
 import { API_BASE } from '@/lib/api';
+import { getSupabase } from '@/lib/supabaseClient';
+import { useAuth } from '@/components/AuthProvider';
 
 
 const panel =
@@ -23,6 +25,7 @@ export default function DownloaderHome({ onAnalyze, initialTab = 'download', onT
   const [tab, setTab] = useState<Tab>(initialTab);
   const [url, setUrl] = useState('');
   const disabled = !url.trim();
+  const { token: authToken } = useAuth();
 
   useEffect(() => {
     setTab(initialTab);
@@ -41,7 +44,23 @@ export default function DownloaderHome({ onAnalyze, initialTab = 'download', onT
     if (!trimmed) return;
     if (!onAnalyze) {
       try {
-        const response = await fetch(`${API_BASE}/api/analyze?url=${encodeURIComponent(trimmed)}`);
+        // Get Supabase auth token
+        const supabase = getSupabase();
+  let bearer: string | undefined = authToken ?? undefined;
+        if (!bearer && supabase) {
+          const { data } = await supabase.auth.getSession();
+          bearer = data.session?.access_token;
+        }
+
+        const headers: Record<string, string> = {};
+        if (bearer) {
+          headers['Authorization'] = `Bearer ${bearer}`;
+        }
+        
+        const response = await fetch(`${API_BASE}/api/analyze?url=${encodeURIComponent(trimmed)}`, {
+          headers,
+          credentials: 'include',
+        });
         if (!response.ok) {
           alert('Analyze failed');
         } else {
@@ -54,23 +73,20 @@ export default function DownloaderHome({ onAnalyze, initialTab = 'download', onT
     } else {
       onAnalyze(trimmed);
     }
-  }, [onAnalyze, url]);
+  }, [onAnalyze, url, authToken]);
 
   return (
-    <div className="space-y-4 text-white">
+    <div className="space-y-3 text-white">
       {/* Top bar */}
-      <div className={`${panel} p-4`}>
-        <div className="flex items-center justify-between gap-4">
-          <div className="flex items-center gap-4">
-            <img src="/pumpaj-192.png?v=3" alt="Pumpaj" className="h-12 w-12 rounded-xl" />
-            <h1 className="text-2xl md:text-3xl font-black tracking-tight">
-              Pumpaj <span className="text-white/90">Media Downloader</span> <span className="text-base">✨</span>
+      <div className={`${panel} p-3`}>
+        <div className="flex items-center justify-between gap-3">
+          <div className="flex items-center gap-3">
+            <img src="/pumpaj-192.png?v=3" alt="Pumpaj" className="h-10 w-10 rounded-xl" />
+            <h1 className="text-xl md:text-2xl font-black tracking-tight">
+              Pumpaj <span className="text-white/90">Media Downloader</span> <span className="text-sm">✨</span>
             </h1>
           </div>
           <div className="hidden lg:flex items-center gap-2">
-            <span className={chip}>
-              Author: <b>a0o0o0o</b>
-            </span>
             <a className={`${chip} hover:bg-white/[0.12]`} href="https://paypal.me/zoxknez" target="_blank" rel="noreferrer">
               💛 Donate
             </a>
@@ -83,24 +99,24 @@ export default function DownloaderHome({ onAnalyze, initialTab = 'download', onT
         </div>
 
         {/* Tabs */}
-        <div className="mt-4 flex flex-wrap gap-2">
+        <div className="mt-3 flex flex-wrap gap-2">
           {([
             ['download', '💬', 'Download'],
             ['queue', '⏳', 'Queue'],
-            ['batch', '⚙️', 'Batch'],
             ['history', '🕓', 'History'],
             ['settings', '⚙', 'Settings'],
+            ['batch', '⚙️', 'Batch'],
           ] as [Tab, string, string][]).map(([key, icon, label]) => {
             const active = tab === key;
             return (
               <button
                 key={key}
                 onClick={() => handleTabClick(key)}
-                className={`px-4 py-2 rounded-xl text-sm font-semibold transition border ${
+                className={`px-3 py-1.5 rounded-xl text-sm font-semibold transition border ${
                   active ? 'bg-white/[0.14] border-white/20 shadow' : 'bg-white/[0.06] border-white/10 hover:bg-white/[0.1]'
                 }`}
               >
-                <span className="mr-2">{icon}</span>
+                <span className="mr-1.5">{icon}</span>
                 {label}
               </button>
             );
@@ -109,8 +125,8 @@ export default function DownloaderHome({ onAnalyze, initialTab = 'download', onT
       </div>
 
       {/* URL bar */}
-      <div className={`${panel} p-3`}>
-        <div className="flex items-center gap-3">
+      <div className={`${panel} p-2.5`}>
+        <div className="flex items-center gap-2">
           <div className="flex-1 relative">
             <input
               value={url}
@@ -119,7 +135,7 @@ export default function DownloaderHome({ onAnalyze, initialTab = 'download', onT
                 if (event.key === 'Enter' && !disabled) runAnalyze();
               }}
               placeholder="Paste video/playlist URL here…"
-              className="w-full rounded-xl border border-white/12 bg-white/[0.05] px-5 py-4 text-white placeholder-white/60 outline-none focus:border-blue-400/60 focus:ring-2 focus:ring-blue-500/20"
+              className="w-full rounded-xl border border-white/12 bg-white/[0.05] px-4 py-3 text-white placeholder-white/60 outline-none focus:border-blue-400/60 focus:ring-2 focus:ring-blue-500/20"
             />
             <div className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 flex items-center gap-2 text-white/40">
               <span>📅</span>
@@ -129,7 +145,7 @@ export default function DownloaderHome({ onAnalyze, initialTab = 'download', onT
           <button
             onClick={runAnalyze}
             disabled={disabled}
-            className={`rounded-xl px-6 py-3 font-semibold text-white transition ${
+            className={`rounded-xl px-5 py-2.5 font-semibold text-white transition ${
               disabled
                 ? 'bg-slate-600 cursor-not-allowed'
                 : 'bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500'
@@ -142,11 +158,11 @@ export default function DownloaderHome({ onAnalyze, initialTab = 'download', onT
 
       {/* Cards grid – prikaz kao na desktop maketi */}
       {tab === 'download' && (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
           <FeatureCard title="Thumbnail Extraction" badge="🖼️" crown>
             <BigLine>Ultra HD Thumbnails</BigLine>
             <Mini>Extract perfect thumbnails in any resolution</Mini>
-            <Badges items={['4K · Ultra HD', 'All Formats · JPG/PNG/WEBP']} />
+            <Badges items={['8K · Ultra HD', 'All Formats · JPG/PNG/WEBP']} />
             <Bullets items={['Pixel-perfect extraction', 'Multiple timestamps', 'Lossless originals when available']} />
             <Footer text="Ready to extract thumbnails – paste URL above" />
           </FeatureCard>
@@ -154,7 +170,7 @@ export default function DownloaderHome({ onAnalyze, initialTab = 'download', onT
           <FeatureCard title="Video Downloads" badge="🎬">
             <BigLine>Quality Options</BigLine>
             <Mini>Download videos in any format & quality</Mini>
-            <Badges items={['4K · Ultra HD', 'All Formats · MP4/WEBM/MKV']} />
+            <Badges items={['8K · Ultra HD', 'All Formats · MP4/WEBM/MKV']} />
             <Bullets items={['Up to 8K support', '60fps smooth playback', 'HDR & Dolby Vision ready']} />
             <Footer text="Analyze URL to see options" />
           </FeatureCard>
@@ -191,14 +207,14 @@ export default function DownloaderHome({ onAnalyze, initialTab = 'download', onT
 
 function FeatureCard({ title, badge, children, crown, dot }: { title: string; badge: string; children: ReactNode; crown?: boolean; dot?: boolean }) {
   return (
-    <div className={`${panel} p-4`}>
+    <div className={`${panel} p-3`}>
       <div className="flex items-center justify-between">
-        <div className={`${chip} uppercase tracking-wider`}>
+        <div className={`${chip} uppercase tracking-wider text-xs`}>
           {badge} {title}
         </div>
         <div className="text-yellow-300/80">{crown ? '👑' : dot ? '🟡' : null}</div>
       </div>
-      <div className={`${subpanel} mt-3 p-4 min-h-[220px]`}>{children}</div>
+      <div className={`${subpanel} mt-2 p-3 min-h-[180px]`}>{children}</div>
     </div>
   );
 }
@@ -213,9 +229,9 @@ function Mini({ children }: { children: ReactNode }) {
 
 function Bullets({ items }: { items: string[] }) {
   return (
-    <ul className="mt-3 space-y-1.5 text-sm text-white/85">
+    <ul className="mt-2 space-y-1 text-xs text-white/85">
       {items.map((text) => (
-        <li key={text} className="flex items-start gap-2">
+        <li key={text} className="flex items-start gap-1.5">
           <span className="mt-0.5">•</span>
           <span>{text}</span>
         </li>
@@ -226,9 +242,9 @@ function Bullets({ items }: { items: string[] }) {
 
 function Badges({ items }: { items: string[] }) {
   return (
-    <div className="mt-3 flex flex-wrap gap-2">
+    <div className="mt-2 flex flex-wrap gap-1.5">
       {items.map((text) => (
-        <span key={text} className="px-2.5 py-1 rounded-lg bg-white/[0.07] border border-white/12 text-xs">
+        <span key={text} className="px-2 py-0.5 rounded-lg bg-white/[0.07] border border-white/12 text-xs">
           {text}
         </span>
       ))}
@@ -238,7 +254,7 @@ function Badges({ items }: { items: string[] }) {
 
 function Footer({ text }: { text: string }) {
   return (
-    <div className="mt-4 text-xs text-white/60 border-t border-white/10 pt-3">{text}</div>
+    <div className="mt-3 text-xs text-white/60 border-t border-white/10 pt-2">{text}</div>
   );
 }
 
