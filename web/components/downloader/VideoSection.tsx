@@ -213,7 +213,7 @@ export const VideoSection: React.FC<VideoSectionProps> = ({ analysisData, onForm
       setJobStage('starting');
       jobStartRef.current = Date.now();
       try { subRef.current?.close(); } catch {}
-      subRef.current = subscribeJobProgress(
+      subRef.current = await subscribeJobProgress(
         id,
         (p) => {
           if (typeof p.progress === 'number') setJobProgress(p.progress);

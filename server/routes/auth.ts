@@ -1,4 +1,5 @@
 import type { Express, Request, Response } from 'express';
+import { randomUUID } from 'node:crypto';
 import bcrypt from 'bcryptjs';
 import { upsertUserFromProvider, createUserWithPassword, findUserByUsername, getActiveUser } from '../storage/usersRepo.js';
 import type { DbUser } from '../storage/usersRepo.js';
@@ -22,17 +23,28 @@ function safeUserPayload(user: DbUser | null | undefined) {
   return rest;
 }
 
-function issueToken(user: DbUser) {
-  return signAppJwt({ sub: user.id, email: user.email, username: user.username, plan: user.plan, planExpiresAt: user.planExpiresAt });
+function issueToken(user: DbUser, expiresIn?: string, extraClaims?: Record<string, unknown>) {
+  const payload = {
+    sub: user.id,
+    email: user.email,
+    username: user.username,
+    plan: user.plan,
+    planExpiresAt: user.planExpiresAt,
+    guest: user.guest ? true : undefined,
+    ...extraClaims,
+  } as Record<string, unknown>;
+  if (!payload.planExpiresAt) delete payload.planExpiresAt;
+  if (!payload.guest) delete payload.guest;
+  return signAppJwt(payload, expiresIn);
 }
 
-function setAuthCookie(res: Response, token: string) {
+function setAuthCookie(res: Response, token: string, maxAgeMs?: number) {
   try {
     res.cookie(AUTH_COOKIE, token, {
       httpOnly: true,
       sameSite: 'lax',
       secure: COOKIE_SECURE,
-      maxAge: COOKIE_MAX_AGE,
+      maxAge: typeof maxAgeMs === 'number' ? maxAgeMs : COOKIE_MAX_AGE,
       path: '/',
     });
   } catch {}
@@ -49,11 +61,16 @@ function clearAuthCookie(res: Response) {
   } catch {}
 }
 
-function respondWithAuth(res: Response, user: DbUser) {
+function respondWithAuth(res: Response, user: DbUser, options?: { expiresIn?: string; extraClaims?: Record<string, unknown>; extraBody?: Record<string, unknown>; cookieMaxAgeMs?: number }) {
   const active = getActiveUser(user.id) || user;
-  const token = issueToken(active);
-  setAuthCookie(res, token);
-  return res.json({ token, user: safeUserPayload(active), policy: policyFor(active.plan) });
+  const token = issueToken(active, options?.expiresIn, options?.extraClaims);
+  setAuthCookie(res, token, options?.cookieMaxAgeMs);
+  return res.json({
+    token,
+    user: safeUserPayload(active),
+    policy: policyFor(active.plan),
+    ...(options?.extraBody ?? {}),
+  });
 }
 
 export function mountAuthRoutes(app: Express) {
@@ -98,6 +115,36 @@ export function mountAuthRoutes(app: Express) {
   app.post('/auth/logout', async (_req: Request, res: Response) => {
     clearAuthCookie(res);
     return res.json({ ok: true });
+  });
+
+  app.post('/auth/guest', async (req: Request, res: Response) => {
+    try {
+      const bodyTtl = Number((req.body as any)?.ttlMinutes);
+      const envTtl = Number(process.env.GUEST_SESSION_TTL_MINUTES || process.env.GUEST_TTL_MINUTES || process.env.GUEST_TTL);
+      const defaultTtl = 120;
+      const rawTtl = Number.isFinite(bodyTtl) ? bodyTtl : envTtl;
+      let ttlMinutes = Number.isFinite(rawTtl) ? rawTtl : defaultTtl;
+      if (!Number.isFinite(ttlMinutes) || ttlMinutes <= 0) ttlMinutes = defaultTtl;
+      ttlMinutes = Math.max(5, Math.min(720, Math.round(ttlMinutes)));
+      const ttlMs = ttlMinutes * 60_000;
+      const guestId = `guest_${randomUUID()}`;
+      const idSuffix = guestId.replace(/[^a-z0-9]/gi, '').slice(-6) || guestId.slice(-6);
+      const username = `Guest-${idSuffix.toUpperCase()}`;
+      const expiresAt = new Date(Date.now() + ttlMs).toISOString();
+      const guestUser: DbUser = {
+        id: guestId,
+        username,
+        plan: 'FREE',
+        guest: true,
+      };
+      return respondWithAuth(res, guestUser, {
+        expiresIn: `${ttlMinutes}m`,
+        extraBody: { guestExpiresAt: expiresAt },
+        cookieMaxAgeMs: ttlMs,
+      });
+    } catch (e: any) {
+      return res.status(500).json({ error: 'guest_failed', message: String(e?.message || e) });
+    }
   });
 
   app.get('/auth/whoami', requireAuth, (req: any, res: Response) => {

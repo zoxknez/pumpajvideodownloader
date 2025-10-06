@@ -15,6 +15,7 @@ export interface DbUser {
   passwordHash?: string;
   createdAt?: string;
   updatedAt?: string;
+  guest?: boolean;
 }
 
 function withNormalizedPlan(user: DbUser, now = Date.now()): { normalized: DbUser; changed: boolean } {

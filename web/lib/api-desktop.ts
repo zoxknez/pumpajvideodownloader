@@ -4,19 +4,121 @@
  */
 
 import { getSupabase } from './supabaseClient';
+import { API_BASE, apiUrl } from './apiBase';
 
-// API Base - use env var or fallback to localhost
-export const API_BASE = 
-  (typeof process !== 'undefined' && process?.env?.NEXT_PUBLIC_API_BASE) 
-    ? String(process.env.NEXT_PUBLIC_API_BASE) 
-    : 'http://localhost:5176';
+export { API_BASE } from './apiBase';
 
+const CLIENT_TRACE_HEADER = 'pumpaj-web';
 const DEFAULT_TIMEOUT_MS = 20000;
+
+type SignedEntry = { token: string; q: string; exp: number };
+const signCache = new Map<string, SignedEntry>();
+
+function randomId() {
+  try {
+    if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+      return crypto.randomUUID();
+    }
+  } catch {}
+  return Math.random().toString(36).slice(2, 11);
+}
+
+function absoluteUrl(path: string): string {
+  if (!path) return apiUrl('/');
+  if (/^https?:\/\//i.test(path)) return path;
+  return apiUrl(path.startsWith('/') ? path : `/${path}`);
+}
 
 function withTimeout<T>(factory: (signal: AbortSignal) => Promise<T>, ms = DEFAULT_TIMEOUT_MS): Promise<T> {
   const ac = new AbortController();
   const t = setTimeout(() => ac.abort(), ms);
   return factory(ac.signal).finally(() => clearTimeout(t));
+}
+
+async function buildHeaders(extra?: HeadersInit): Promise<Headers> {
+  const combined = await authHeaders(extra);
+  const headers = new Headers(combined as HeadersInit);
+  if (!headers.has('X-Req-Id')) headers.set('X-Req-Id', randomId());
+  if (!headers.has('X-Client-Trace')) headers.set('X-Client-Trace', CLIENT_TRACE_HEADER);
+  return headers;
+}
+
+export async function apiFetch(path: string, init: RequestInit = {}): Promise<Response> {
+  const headers = await buildHeaders(init.headers);
+  const target = absoluteUrl(path);
+  const started = typeof performance !== 'undefined' ? performance.now() : Date.now();
+  const res = await fetch(target, {
+    ...init,
+    headers,
+    credentials: init.credentials ?? 'include',
+  });
+  if (typeof performance !== 'undefined') {
+    const dur = performance.now() - started;
+    if (dur > 10_000) {
+      console.debug?.('[apiFetch] slow request', { target, durationMs: Math.round(dur) });
+    }
+  }
+  return res;
+}
+
+function cacheKey(id: string, scope: 'download' | 'progress') {
+  return `${scope}:${id}`;
+}
+
+export function clearSignCache() {
+  signCache.clear();
+}
+
+export async function getSigned(id: string, scope: 'download' | 'progress'): Promise<SignedEntry> {
+  const key = cacheKey(id, scope);
+  const now = Date.now();
+  const cached = signCache.get(key);
+  if (cached && cached.exp - now > 15_000) {
+    return cached;
+  }
+
+  const path = scope === 'download' ? `/api/job/file/${encodeURIComponent(id)}/sign` : `/api/progress/${encodeURIComponent(id)}/sign`;
+
+  try {
+    const res = await apiFetch(path, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{}',
+    });
+    if (!res.ok) {
+      signCache.delete(key);
+      throw new Error(`sign_failed_${res.status}`);
+    }
+    const data = await res.json().catch(() => ({}));
+    const token = String(data?.token || '');
+    const q = String(data?.queryParam || 's');
+    if (!token) {
+      signCache.delete(key);
+      throw new Error('sign_failed_missing_token');
+    }
+    const exp = Number(data?.expiresAt) || now + 600_000;
+    const entry: SignedEntry = { token, q, exp };
+    signCache.set(key, entry);
+    return entry;
+  } catch (err) {
+    signCache.delete(key);
+    throw err;
+  }
+}
+
+function supportsFileSystemAccess() {
+  return typeof window !== 'undefined' && typeof (window as any).showSaveFilePicker === 'function' && Boolean(window.isSecureContext);
+}
+
+export function parseFilename(res: Response, fallback: string) {
+  const cd = res.headers.get('content-disposition') || '';
+  const match = cd.match(/filename\*?=(?:UTF-8'')?"?([^";]+)"?/i);
+  const raw = match ? decodeURIComponent(match[1]) : fallback;
+  return raw
+    .replace(/[\u0000-\u001f<>:"/\\|?*]+/g, '_')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 120) || fallback;
 }
 
 export async function authHeaders(extra?: HeadersInit): Promise<HeadersInit> {
@@ -89,13 +191,14 @@ export async function analyzeUrl(url: string): Promise<AnalyzeResponse> {
   if (!/^https?:\/\//i.test(u)) throw new Error('URL must start with http:// or https://');
   
   try {
-    const headers = await authHeaders({ 'Content-Type': 'application/json' });
-    const res = await withTimeout<Response>((signal) => fetch(`${API_BASE}/api/analyze`, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({ url: u }),
-      signal,
-    }));
+    const res = await withTimeout<Response>((signal) =>
+      apiFetch('/api/analyze', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: u }),
+        signal,
+      })
+    );
     if (!res.ok) {
       const text = await res.text().catch(() => '');
       throw new Error(text || `Analyze failed (${res.status})`);
@@ -281,10 +384,8 @@ export async function proxyDownload(opts: {
   // For web: attempt fetch with progress tracking if callback provided
   if (opts.onProgress) {
     try {
-      const headers = await authHeaders();
-      const res = await fetch(u.toString(), { 
+      const res = await apiFetch(u.toString(), {
         signal: opts.signal,
-        headers 
       });
       
       if (!res.ok) throw new Error(`Download failed: ${res.status}`);
@@ -292,6 +393,7 @@ export async function proxyDownload(opts: {
       const total = Number(res.headers.get('content-length') || 0) || undefined;
       const reader = res.body?.getReader();
       if (!reader) throw new Error('No response body');
+      const filename = parseFilename(res, opts.filename);
       
       const chunks: Uint8Array[] = [];
       let loaded = 0;
@@ -317,7 +419,7 @@ export async function proxyDownload(opts: {
       const blobUrl = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = blobUrl;
-      a.download = opts.filename;
+      a.download = filename;
       a.click();
       URL.revokeObjectURL(blobUrl);
       
@@ -335,10 +437,9 @@ export async function proxyDownload(opts: {
 
 // Job management (simplified)
 export async function startBestJob(url: string, title?: string): Promise<string> {
-  const headers = await authHeaders({ 'Content-Type': 'application/json' });
-  const res = await fetch(`${API_BASE}/api/job/start/best`, {
+  const res = await apiFetch('/api/job/start/best', {
     method: 'POST',
-    headers,
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ url, title }),
   });
   if (!res.ok) throw new Error(`Job start failed: ${res.status}`);
@@ -347,10 +448,9 @@ export async function startBestJob(url: string, title?: string): Promise<string>
 }
 
 export async function startAudioJob(url: string, title?: string, format?: string): Promise<string> {
-  const headers = await authHeaders({ 'Content-Type': 'application/json' });
-  const res = await fetch(`${API_BASE}/api/job/start/audio`, {
+  const res = await apiFetch('/api/job/start/audio', {
     method: 'POST',
-    headers,
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ url, title, format }),
   });
   if (!res.ok) throw new Error(`Job start failed: ${res.status}`);
@@ -359,24 +459,20 @@ export async function startAudioJob(url: string, title?: string, format?: string
 }
 
 export async function cancelJob(id: string) {
-  const headers = await authHeaders();
-  await fetch(`${API_BASE}/api/job/cancel/${id}`, {
+  await apiFetch(`/api/job/cancel/${encodeURIComponent(id)}`, {
     method: 'POST',
-    headers,
   });
 }
 
 export function jobFileUrl(id: string): string {
-  return `${API_BASE}/api/job/file/${id}`;
+  return absoluteUrl(`/api/job/file/${encodeURIComponent(id)}`);
 }
 
 // Additional functions needed by VideoSection
 export async function isJobFileReady(id: string): Promise<boolean> {
   try {
-    const headers = await authHeaders();
-    const res = await fetch(jobFileUrl(id), {
+    const res = await apiFetch(jobFileUrl(id), {
       method: 'HEAD',
-      headers,
     });
     return res.ok;
   } catch {
@@ -384,18 +480,65 @@ export async function isJobFileReady(id: string): Promise<boolean> {
   }
 }
 
-export async function downloadJobFile(id: string, fallbackName?: string): Promise<boolean> {
-  const url = jobFileUrl(id);
-  window.open(url, '_blank');
+async function saveWithFileSystem(res: Response, filename: string) {
+  const body = res.body;
+  if (!body) throw new Error('stream_unavailable');
+  const picker = await (window as any).showSaveFilePicker({ suggestedName: filename });
+  const writable = await picker.createWritable();
+  const reader = body.getReader();
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (value) await writable.write(value);
+    }
+    await writable.close();
+  } catch (err) {
+    try { await writable.abort(); } catch {}
+    throw err;
+  }
+}
+
+async function saveAsBlob(res: Response, filename: string) {
+  const blob = await res.blob();
+  const blobUrl = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = blobUrl;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(blobUrl);
+}
+
+export async function downloadJobFile(id: string, fallbackName = 'download.bin'): Promise<boolean> {
+  const { token, q } = await getSigned(id, 'download');
+  const signed = `${jobFileUrl(id)}?${q}=${encodeURIComponent(token)}`;
+  const res = await apiFetch(signed);
+  if (!res.ok) {
+    throw new ProxyDownloadError('Job file download failed', { status: res.status });
+  }
+  const filename = parseFilename(res, fallbackName);
+  const clone = res.clone();
+
+  if (supportsFileSystemAccess()) {
+    try {
+      await saveWithFileSystem(res, filename);
+      return true;
+    } catch (err) {
+      console.warn('File System Access fallback', err);
+    }
+  }
+
+  await saveAsBlob(clone, filename);
   return true;
 }
 
 export async function resolveFormatUrl(sourceUrl: string, formatId: string): Promise<string | null> {
   try {
-    const headers = await authHeaders({ 'Content-Type': 'application/json' });
-    const res = await fetch(`${API_BASE}/api/get-url`, {
+    const res = await apiFetch('/api/get-url', {
       method: 'POST',
-      headers,
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ url: sourceUrl, formatId }),
     });
     if (!res.ok) return null;
@@ -406,35 +549,83 @@ export async function resolveFormatUrl(sourceUrl: string, formatId: string): Pro
   }
 }
 
-export function subscribeJobProgress(
+export async function subscribeJobProgress(
   id: string,
   onProgress: (data: { progress?: number; stage?: string }) => void,
   onComplete: (status: string) => void
-): { close: () => void } {
-  const eventSource = new EventSource(`${API_BASE}/api/progress/${id}`);
-  
-  eventSource.onmessage = (event) => {
+): Promise<{ close: () => void }> {
+  let closed = false;
+  let es: EventSource | null = null;
+  let retries = 0;
+  const started = typeof performance !== 'undefined' ? performance.now() : Date.now();
+
+  const finish = (status: string) => {
+    if (closed) return;
+    closed = true;
+    try { es?.close(); } catch {}
     try {
-      const data = JSON.parse(event.data);
-      if (data.progress !== undefined || data.stage) {
-        onProgress({ progress: data.progress, stage: data.stage });
+      const durationMs = (typeof performance !== 'undefined' ? performance.now() : Date.now()) - started;
+      if (typeof console !== 'undefined') {
+        console.debug?.('[subscribeJobProgress] completed', { id, status, durationMs: Math.round(durationMs) });
       }
-      if (data.status === 'completed' || data.status === 'failed') {
-        onComplete(data.status);
-        eventSource.close();
+    } catch {}
+    try { onComplete(status); } catch {}
+  };
+
+  const open = async (): Promise<void> => {
+    const { token, q } = await getSigned(id, 'progress');
+    const qs = new URLSearchParams();
+    qs.set(q, token);
+    const url = `${apiUrl(`/api/progress/${encodeURIComponent(id)}`)}?${qs.toString()}`;
+    es = new EventSource(url, { withCredentials: true } as EventSourceInit);
+
+    es.addEventListener('ping', () => {});
+
+    es.onmessage = (event) => {
+      try {
+        const payload = JSON.parse(event.data);
+        if (payload.progress !== undefined || payload.stage) {
+          onProgress({ progress: payload.progress, stage: payload.stage });
+        }
+        if (payload.status === 'completed' || payload.status === 'failed') {
+          finish(payload.status);
+        }
+      } catch {}
+    };
+
+    es.addEventListener('end', (event: MessageEvent) => {
+      let status = 'completed';
+      try {
+        const data = JSON.parse(event.data);
+        if (typeof data?.status === 'string') status = data.status;
+      } catch {}
+      finish(status);
+    });
+
+    es.onerror = async () => {
+      try { es?.close(); } catch {}
+      if (closed) return;
+      if (retries >= 1) {
+        finish('failed');
+        return;
       }
-    } catch (err) {
-      console.error('SSE parse error:', err);
-    }
+      retries += 1;
+      signCache.delete(cacheKey(id, 'progress'));
+      try {
+        await open();
+      } catch {
+        finish('failed');
+      }
+    };
   };
-  
-  eventSource.onerror = () => {
-    onComplete('failed');
-    eventSource.close();
-  };
-  
+
+  await open();
+
   return {
-    close: () => eventSource.close()
+    close: () => {
+      closed = true;
+      try { es?.close(); } catch {}
+    },
   };
 }
 
@@ -455,20 +646,17 @@ export class ProxyDownloadError extends Error {
 
 // Settings API
 export async function getJobsSettings(): Promise<any> {
-  const headers = await authHeaders();
-  const res = await fetch(`${API_BASE}/api/jobs/settings`, {
+  const res = await apiFetch('/api/jobs/settings', {
     method: 'GET',
-    headers,
   });
   if (!res.ok) throw new Error(`Failed to get settings: ${res.status}`);
   return await res.json();
 }
 
 export async function updateJobsSettings(settings: any): Promise<void> {
-  const headers = await authHeaders({ 'Content-Type': 'application/json' });
-  const res = await fetch(`${API_BASE}/api/jobs/settings`, {
+  const res = await apiFetch('/api/jobs/settings', {
     method: 'POST',
-    headers,
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(settings),
   });
   if (!res.ok) throw new Error(`Failed to update settings: ${res.status}`);

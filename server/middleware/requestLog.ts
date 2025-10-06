@@ -37,6 +37,7 @@ export function requestLogger(req: Request, res: Response, next: NextFunction) {
     const shouldQuiet = process.env.VERBOSE_REQUEST_LOGS !== '1' && isQuietRequest(req, res.statusCode);
     if (shouldQuiet) return;
     const durMs = Number((process.hrtime.bigint() - start) / 1_000_000n);
+    const clientTrace = typeof req.headers['x-client-trace'] === 'string' ? req.headers['x-client-trace'] : undefined;
     console.info(JSON.stringify({
       t: new Date().toISOString(),
       id,
@@ -47,6 +48,7 @@ export function requestLogger(req: Request, res: Response, next: NextFunction) {
       durMs,
       h: redactHeaders(req.headers as any),
       tp: traceparent || undefined,
+      ct: clientTrace,
     }));
   });
 

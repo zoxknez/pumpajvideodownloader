@@ -264,7 +264,13 @@ export default function DownloaderDemo() {
         </div>
 
         {jobId && stage === 'ended' && (
-          <button className="pumpaj-button" onClick={() => downloadJobFile(jobId)} style={{ alignSelf: 'flex-start' }}>
+          <button
+            className="pumpaj-button"
+            onClick={() => {
+              void downloadJobFile(jobId);
+            }}
+            style={{ alignSelf: 'flex-start' }}
+          >
             Download ready file
           </button>
         )}

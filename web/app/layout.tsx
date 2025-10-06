@@ -1,6 +1,7 @@
 /* eslint-disable react-refresh/only-export-components */
 import './globals.css';
 import { cookies } from 'next/headers';
+import { Analytics } from '@vercel/analytics/next';
 import I18nProvider from '@/components/I18nProvider';
 import { Providers } from './providers';
 
@@ -66,6 +67,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
               {children}
             
           </Providers>
+          <Analytics />
         </I18nProvider>
       </body>
     </html>

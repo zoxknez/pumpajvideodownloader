@@ -41,10 +41,12 @@ function resolveProcessEnv(): string {
 
 function resolveViteEnv(): string {
   try {
-    const metaEnv = typeof import.meta !== 'undefined' ? (import.meta as any)?.env : undefined;
-    if (!metaEnv) return '';
-    if (metaEnv.VITE_API_BASE) return metaEnv.VITE_API_BASE;
-    if (metaEnv.PUBLIC_API_BASE) return metaEnv.PUBLIC_API_BASE;
+    const globalScope = globalThis as Record<string, unknown> | undefined;
+    const candidate = (globalScope?.__vite_env as Record<string, string> | undefined)
+      || (globalScope?.import_meta_env as Record<string, string> | undefined);
+    if (!candidate) return '';
+    if (typeof candidate.VITE_API_BASE === 'string') return candidate.VITE_API_BASE;
+    if (typeof candidate.PUBLIC_API_BASE === 'string') return candidate.PUBLIC_API_BASE;
   } catch {}
   return '';
 }
