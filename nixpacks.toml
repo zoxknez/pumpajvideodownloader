@@ -1,6 +1,6 @@
-# Cache bust: 2025-10-07
+# Cache bust: 2025-10-07 (FFmpeg removed - using yt-dlp pre-merged formats)
 [phases.setup]
-nixPkgs = ['nodejs_20', 'python3', 'ffmpeg']
+nixPkgs = ['nodejs_20', 'python3']
 
 [phases.install]
 cmds = ['npm ci --prefix server']

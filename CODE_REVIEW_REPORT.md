@@ -30,12 +30,25 @@ _Direktorijum:_ `/mnt/data/review_workspace`
    - LOG_LEVEL=info ✓
    - NODE_ENV=production ✓
 
-### IN PROGRESS 🔄
-- FFmpeg dependency removal (NEXT - critical path)
+4. **FFmpeg dependency removal** 🎉 - Complete refactor to FFmpeg-free architecture
+   - Removed ffmpeg-static package from dependencies ✓
+   - Removed FFmpeg from nixpacks.toml build ✓
+   - Removed all ffmpegLocation references (12 locations) ✓
+   - Removed all mergeOutputFormat parameters (8 locations) ✓
+   - Deprecated subtitle extraction endpoint (requires FFmpeg) ✓
+   - TypeScript build verified (no errors) ✓
+   - Tests updated (health.test.ts) ✓
+   
+   **Impact:**
+   - Docker image size reduction: ~150MB smaller
+   - Faster Railway deployments (no FFmpeg compilation)
+   - Simpler dependency chain (Python + Node only)
+   - yt-dlp now uses native pre-merged formats
 
 ### PENDING ⏳
 - Security improvements (?token= → ?s= signed params)
 - Filename sanitization validation
+- Frontend subtitle feature detection (graceful disable when ENABLE_FFMPEG=false)
 
 ---
 

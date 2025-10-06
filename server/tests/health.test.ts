@@ -32,7 +32,6 @@ describe('server health endpoints', () => {
       node: expect.stringContaining('v'),
       checks: expect.objectContaining({
         ytdlpAvailable: expect.any(Boolean),
-        ffmpegAvailable: expect.any(Boolean),
       }),
       settings: expect.objectContaining({
         maxConcurrent: expect.any(Number),

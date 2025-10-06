@@ -42,13 +42,6 @@ import { signToken } from './core/signed.js';
 import { traceContext } from './middleware/trace.js';
 import { analyzeRateLimit, batchRateLimit } from './middleware/rateLimit.js';
 
-// ---- Optional ffmpeg-static (fallback na system ffmpeg) ----
-let ffmpegBinary: string | undefined;
-try {
-  const mod = await import('ffmpeg-static');
-  ffmpegBinary = (mod as any)?.default || (mod as any);
-} catch {}
-
 // ---- App init / middleware ----
 const log = getLogger('server');
 const cfg = loadConfig();
@@ -639,12 +632,6 @@ app.get('/api/version', (_req, res) => {
       const out = spawnSync('yt-dlp', ['--version'], { encoding: 'utf8' });
       if (out?.status === 0) ytVersion = String(out.stdout || '').trim();
     } catch {}
-  const ffmpegPath = ffmpegBinary || 'ffmpeg';
-    let ffmpegVersion = '';
-    try {
-      const out = spawnSync(ffmpegPath, ['-version'], { encoding: 'utf8' });
-      if (out?.status === 0) ffmpegVersion = String(out.stdout || '').split(/\r?\n/, 1)[0];
-    } catch {}
     const freeBytes = getFreeDiskBytes(os.tmpdir());
     res.json({
       name: pkg?.name || 'yt-dlp-server',
@@ -652,12 +639,8 @@ app.get('/api/version', (_req, res) => {
       node: process.version,
       platform: `${process.platform} ${process.arch}`,
       ytDlp: ytVersion || 'unknown',
-      ffmpeg: ffmpegBinary ? 'bundled' : ffmpegVersion ? 'system' : 'system/unknown',
-      ffmpegPath,
-      ffmpegVersion: ffmpegVersion || '',
       checks: {
         ytdlpAvailable: Boolean(ytVersion),
-        ffmpegAvailable: Boolean(ffmpegVersion),
       },
       port: cfg.port,
       settings: {
@@ -949,14 +932,12 @@ app.get('/api/download/best', requireAuth as any, async (req: any, res) => {
       sourceUrl,
       {
         format: `bv*[height<=?${policy.maxHeight}]+ba/b[height<=?${policy.maxHeight}]`,
-        mergeOutputFormat: 'mp4',
         output: outPath,
         addHeader: makeHeaders(sourceUrl),
         restrictFilenames: true,
         noCheckCertificates: true,
         noWarnings: true,
         newline: true,
-        ffmpegLocation: ffmpegBinary || undefined,
         proxy: PROXY_URL,
         limitRate: chosenLimitRateK(policy.speedLimitKbps),
         ...(cfg.maxFileSizeMb ? { maxFilesize: `${cfg.maxFileSizeMb}M` } : {}),
@@ -1083,7 +1064,6 @@ app.get('/api/download/audio', requireAuth as any, async (req: any, res) => {
         noCheckCertificates: true,
         noWarnings: true,
         newline: true,
-        ffmpegLocation: ffmpegBinary || undefined,
         proxy: PROXY_URL,
         limitRate: chosenLimitRateK(policy.speedLimitKbps),
         ...(cfg.maxFileSizeMb ? { maxFilesize: `${cfg.maxFileSizeMb}M` } : {}),
@@ -1204,12 +1184,10 @@ app.get('/api/download/chapter', requireAuth as any, async (req: any, res) => {
       sourceUrl,
       {
         format: `bv*[height<=?${policy.maxHeight}]+ba/b[height<=?${policy.maxHeight}]`,
-        mergeOutputFormat: 'mp4',
         output: outPath,
         addHeader: makeHeaders(sourceUrl),
         noCheckCertificates: true,
         noWarnings: true,
-        ffmpegLocation: ffmpegBinary || undefined,
         downloadSections: section,
         ...speedyDlArgs(),
         ...(cfg.maxFileSizeMb ? { maxFilesize: `${cfg.maxFileSizeMb}M` } : {}),
@@ -1292,14 +1270,12 @@ app.post('/api/job/start/best', requireAuth as any, async (req: any, res: Respon
         sourceUrl,
         {
           format: `bv*[height<=?${policy.maxHeight}]+ba/b[height<=?${policy.maxHeight}]`,
-          mergeOutputFormat: 'mp4',
           output: outPath,
           addHeader: makeHeaders(sourceUrl),
           restrictFilenames: true,
           noCheckCertificates: true,
           noWarnings: true,
           newline: true,
-          ffmpegLocation: ffmpegBinary || undefined,
           proxy: PROXY_URL,
           limitRate: chosenLimitRateK(policy.speedLimitKbps),
           ...(cfg.maxFileSizeMb ? { maxFilesize: `${cfg.maxFileSizeMb}M` } : {}),
@@ -1416,7 +1392,6 @@ app.post('/api/job/start/audio', requireAuth as any, async (req: any, res: Respo
           noCheckCertificates: true,
           noWarnings: true,
           newline: true,
-          ffmpegLocation: ffmpegBinary || undefined,
           proxy: PROXY_URL,
           limitRate: chosenLimitRateK(policy.speedLimitKbps),
           ...(cfg.maxFileSizeMb ? { maxFilesize: `${cfg.maxFileSizeMb}M` } : {}),
@@ -1525,13 +1500,11 @@ app.post('/api/job/start/clip', requireAuth as any, async (req: any, res: Respon
       const policy = policyAtQueue;
       const child = (ytdlp as any).exec(sourceUrl, {
         format: `bv*[height<=?${policy.maxHeight}]+ba/b[height<=?${policy.maxHeight}]`,
-        mergeOutputFormat: 'mp4',
         output: outPath,
         addHeader: makeHeaders(sourceUrl),
         noCheckCertificates: true,
         noWarnings: true,
         newline: true,
-        ffmpegLocation: ffmpegBinary || undefined,
         downloadSections: section,
         proxy: PROXY_URL,
         limitRate: chosenLimitRateK(policy.speedLimitKbps),
@@ -1626,9 +1599,7 @@ app.post('/api/job/start/embed-subs', requireAuth as any, async (req: any, res: 
       const policy = policyAtQueue;
       const child = (ytdlp as any).exec(sourceUrl, {
         format: 'bv*+ba/b',
-        mergeOutputFormat: cont,
         writeSubs: true,
-        embedSubs: true,
         subLangs: lang,
         subFormat: fmt,
         output: outPath,
@@ -1637,7 +1608,6 @@ app.post('/api/job/start/embed-subs', requireAuth as any, async (req: any, res: 
         noCheckCertificates: true,
         noWarnings: true,
         newline: true,
-        ffmpegLocation: ffmpegBinary || undefined,
         proxy: PROXY_URL,
         limitRate: chosenLimitRateK(policy.speedLimitKbps),
         ...(cfg.maxFileSizeMb ? { maxFilesize: `${cfg.maxFileSizeMb}M` } : {}),
@@ -1739,14 +1709,12 @@ app.post('/api/job/start/convert', requireAuth as any, async (req: any, res: Res
         sourceUrl,
         {
           format: `bv*[height<=?${policy.maxHeight}]+ba/b[height<=?${policy.maxHeight}]`,
-          mergeOutputFormat: mergeOut,
           output: outPath,
           addHeader: makeHeaders(sourceUrl),
           restrictFilenames: true,
           noCheckCertificates: true,
           noWarnings: true,
           newline: true,
-          ffmpegLocation: ffmpegBinary || undefined,
           proxy: PROXY_URL,
           limitRate: chosenLimitRateK(policy.speedLimitKbps),
           ...(cfg.maxFileSizeMb ? { maxFilesize: `${cfg.maxFileSizeMb}M` } : {}),
@@ -1870,7 +1838,6 @@ app.post('/api/batch', batchRateLimit, requireAuth as any, async (req: any, res)
           noCheckCertificates: true,
           noWarnings: true,
           newline: true,
-          ffmpegLocation: ffmpegBinary || undefined,
           proxy: PROXY_URL,
           limitRate: chosenLimitRateK(policyCur.speedLimitKbps),
           ...(cfg.maxFileSizeMb ? { maxFilesize: `${cfg.maxFileSizeMb}M` } : {}),
@@ -1889,7 +1856,7 @@ app.post('/api/batch', batchRateLimit, requireAuth as any, async (req: any, res)
         } else {
           child = (ytdlp as any).exec(
             u,
-            { format: `bv*[height<=?${policyCur.maxHeight}]+ba/b[height<=?${policyCur.maxHeight}]`, mergeOutputFormat: 'mp4', ...commonArgs },
+            { format: `bv*[height<=?${policyCur.maxHeight}]+ba/b[height<=?${policyCur.maxHeight}]`, ...commonArgs },
             { env: cleanedChildEnv(process.env) }
           );
     }
@@ -2235,8 +2202,17 @@ app.get('/api/job/file/:id', requireAuthOrSigned('download'), jobBucket, (req: a
 
 // ========================
 // Subtitles download (+offset convert via ffmpeg)
+// NOTE: This endpoint requires FFmpeg and is deprecated in FFmpeg-free mode
 // ========================
 app.get('/api/subtitles/download', requireAuth as any, async (req: any, res) => {
+  // FFmpeg-free mode: subtitles feature disabled
+  if (process.env.ENABLE_FFMPEG === 'false') {
+    return res.status(501).json({ 
+      error: 'feature_disabled', 
+      message: 'Subtitle extraction requires FFmpeg which is disabled in this deployment' 
+    });
+  }
+
   try {
     const src = String(req.query.url || '');
     const title = String(req.query.title || 'subtitles');
@@ -2262,19 +2238,9 @@ app.get('/api/subtitles/download', requireAuth as any, async (req: any, res) => 
       return (Readable as any).fromWeb(upstream.body as any).pipe(res);
     }
 
-    const args: string[] = [];
-    if (offsetSec !== 0) args.push('-itsoffset', String(offsetSec));
-    args.push('-i', src);
-    args.push('-map', '0:s?');
-    if (outExt === 'srt') args.push('-c:s', 'srt'); else args.push('-c:s', 'webvtt');
-    args.push('-f', outExt === 'srt' ? 'srt' : 'webvtt');
-    args.push(outPath);
-
-    const ff = spawnSync(ffmpegBinary || 'ffmpeg', args, { encoding: 'utf8' });
-    if (ff.status !== 0 || !fs.existsSync(outPath)) {
-      try { if (fs.existsSync(outPath)) fs.unlinkSync(outPath); } catch {}
-      return res.status(500).json({ error: 'convert_failed', details: ff.stderr || ff.stdout || '' });
-    }
+    // FFmpeg subtitle conversion removed - this code path should never execute
+    // due to early return above when ENABLE_FFMPEG=false
+    return res.status(501).json({ error: 'ffmpeg_not_available' });
 
     const stat = fs.statSync(outPath);
     res.setHeader('Content-Type', outExt === 'srt' ? 'application/x-subrip; charset=utf-8' : 'text/vtt; charset=utf-8');
