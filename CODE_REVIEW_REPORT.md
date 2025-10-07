@@ -15,12 +15,12 @@ _Direktorijum:_ `/mnt/data/review_workspace`
 ## ✅ PROGRESS UPDATE (2025-10-07)
 
 ### COMPLETED ✓
-1. **Console.log cleanup** - 30+ debug logs removed from production code
+1. **Console.log cleanup** (Commit: 5672e65) - 30+ debug logs removed
    - Frontend: auth callback (13), AuthProvider (4), QueueView (1), lib files (9)
    - Backend: middleware/auth.ts (4)
    - Production-safe logger preserved (server/core/logger.ts)
 
-2. **SSE memory leak fix** - Added 'end' event listeners
+2. **SSE memory leak fix** (Commit: 5672e65) - Added 'end' event listeners
    - lib/sse-enhanced.ts ✓
    - components/QueueView.tsx ✓
    - lib/api-desktop.ts (already existed) ✓
@@ -30,7 +30,7 @@ _Direktorijum:_ `/mnt/data/review_workspace`
    - LOG_LEVEL=info ✓
    - NODE_ENV=production ✓
 
-4. **FFmpeg dependency removal** 🎉 - Complete refactor to FFmpeg-free architecture
+4. **FFmpeg dependency removal** (Commit: fa64d40) 🎉 - Complete FFmpeg-free refactor
    - Removed ffmpeg-static package from dependencies ✓
    - Removed FFmpeg from nixpacks.toml build ✓
    - Removed all ffmpegLocation references (12 locations) ✓
@@ -45,9 +45,32 @@ _Direktorijum:_ `/mnt/data/review_workspace`
    - Simpler dependency chain (Python + Node only)
    - yt-dlp now uses native pre-merged formats
 
+5. **P0/P1 Critical Security Fixes** (Commit: d75e545) 🔒 - All major vulnerabilities resolved
+   - Fixed signed URL blocked by global middleware ✓
+   - Fixed 206 range download orphan leak ✓
+   - Fixed SSE ring buffer memory leak (finalizeJob cleanup) ✓
+   - Added formatId injection protection (regex validation) ✓
+   - Implemented FFmpeg-free fallbacks (8 endpoints) ✓
+   
+   **Impact:**
+   - Signed downloads now work correctly
+   - Memory leaks eliminated (SSE buffers + orphan files)
+   - Command injection blocked (formatId sanitization)
+   - Progressive/native streams for all downloads
+
+6. **Deployment Fixes** (Commit: b0b783a) 🚀 - Railway + Vercel build issues resolved
+   - Railway: Skip youtube-dl-exec broken postinstall (--ignore-scripts) ✓
+   - Vercel: Fix module resolution (simplified installCommand) ✓
+   
+   **Status:** Deployments should succeed now!
+
 ### PENDING ⏳
-- Security improvements (?token= → ?s= signed params)
-- Filename sanitization validation
+See POST_DEPLOY_IMPROVEMENTS.md for detailed implementation plan:
+- SSE timeout vs token TTL (activity-based reset) - MEDIUM priority
+- Reaper vs active readers (Windows safety) - LOW priority
+- Vary header for range responses - LOW priority
+- Headers for Instagram/Facebook (403 fix) - MEDIUM priority
+- Signed token revocation (strict one-time policy) - LOW priority
 - Frontend subtitle feature detection (graceful disable when ENABLE_FFMPEG=false)
 
 ---
