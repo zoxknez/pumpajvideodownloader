@@ -12,7 +12,7 @@ import { spawnSync } from 'node:child_process';
 import { getLogger } from './core/logger.js';
 import { loadConfig } from './core/config.js';
 import { isUrlAllowed } from './core/urlAllow.js';
-import { buildCorsOrigin } from './core/corsOrigin.js';
+import { buildCorsOrigin, isOriginAllowed } from './core/corsOrigin.js';
 import { appendHistory, readHistory, updateHistory, removeHistory, clearHistory } from './core/history.js';
 import { readServerSettings, writeServerSettings } from './core/settings.js';
 import { requestLogger } from './middleware/requestLog.js';
@@ -70,8 +70,8 @@ app.use(limiter);
 // Manual CORS implementation - cors package was not deploying correctly to Railway
 app.use((req, res, next) => {
     const origin = req.headers.origin;
-    const allowedOrigins = buildCorsOrigin(process.env.CORS_ORIGIN);
-    if (origin && (allowedOrigins === true || (Array.isArray(allowedOrigins) && allowedOrigins.includes(origin)))) {
+    // Check if origin is allowed
+    if (origin && isOriginAllowed(origin, process.env.CORS_ORIGIN)) {
         res.setHeader('Access-Control-Allow-Origin', origin);
     }
     res.setHeader('Access-Control-Allow-Credentials', 'true');
