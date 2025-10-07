@@ -26,22 +26,27 @@ export function isOriginAllowed(origin: string | undefined, corsOriginEnv?: stri
   if (!corsOriginEnv) return true; // No restriction - allow all
   if (!origin) return false; // No origin header - deny
   
+  // Normalize: trim entire string, split by comma, trim each item
   const items = corsOriginEnv
+    .trim()
     .split(',')
     .map(s => s.trim())
     .filter(Boolean);
+  
+  // Normalize origin for comparison (trim any whitespace)
+  const normalizedOrigin = origin.trim();
   
   return items.some(item => {
     if (item.startsWith('/') && item.endsWith('/')) {
       // Regex pattern
       try {
         const regex = new RegExp(item.slice(1, -1));
-        return regex.test(origin);
+        return regex.test(normalizedOrigin);
       } catch {
         return false;
       }
     }
-    // Exact match
-    return item === origin;
+    // Exact match (case-sensitive, exact string comparison)
+    return item === normalizedOrigin;
   });
 }

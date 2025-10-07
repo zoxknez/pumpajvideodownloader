@@ -93,13 +93,23 @@ app.use((req, res, next) => {
   if (origin && isAllowed) {
     res.setHeader('Access-Control-Allow-Origin', origin);
     res.setHeader('Access-Control-Allow-Credentials', 'true');
+    if (req.method === 'OPTIONS') {
+      log.debug(`CORS: ✅ Allowed origin ${origin}`);
+    }
   } else if (!corsOriginEnv) {
     // Development mode - no CORS_ORIGIN set, allow all
     res.setHeader('Access-Control-Allow-Origin', origin || '*');
     res.setHeader('Access-Control-Allow-Credentials', 'true');
+    if (req.method === 'OPTIONS') {
+      log.debug(`CORS: ✅ Dev mode - allowing all origins`);
+    }
   } else if (origin) {
-    // Origin not allowed - log warning
-    log.warn(`CORS: Rejected origin ${origin} (allowed: ${corsOriginEnv})`);
+    // Origin not allowed - log detailed comparison
+    const allowedList = (corsOriginEnv || '').split(',').map(s => s.trim()).filter(Boolean);
+    log.warn(`CORS: ❌ Rejected origin "${origin}"`);
+    log.warn(`CORS: Allowed origins: [${allowedList.map(o => `"${o}"`).join(', ')}]`);
+    log.warn(`CORS: Origin length: ${origin.length}, first allowed length: ${allowedList[0]?.length || 0}`);
+    log.warn(`CORS: Exact match check: "${origin}" === "${allowedList[0]}" → ${origin === allowedList[0]}`);
   }
   
   // Always set these headers regardless of origin
