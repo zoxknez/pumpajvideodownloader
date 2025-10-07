@@ -855,6 +855,42 @@ app.get('/api/jobs/metrics', requireAuth as any, (_req, res) => {
   res.json({ running: running.size, queued: waiting.length, maxConcurrent: MAX_CONCURRENT });
 });
 
+// List all active jobs (running + queued) for current user
+app.get('/api/job/list', requireAuth as any, (req: any, res) => {
+  const userId = req.user?.id;
+  if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+  
+  // Collect all jobs belonging to this user
+  const userJobs: any[] = [];
+  
+  // Running jobs
+  for (const jobId of running) {
+    const job = jobs.get(jobId);
+    if (job && job.userId === userId) {
+      userJobs.push({
+        id: job.id,
+        type: job.type,
+        status: 'running',
+        tmpId: job.tmpId,
+      });
+    }
+  }
+  
+  // Queued jobs
+  for (const waitingItem of waiting) {
+    if (waitingItem.job.userId === userId) {
+      userJobs.push({
+        id: waitingItem.job.id,
+        type: waitingItem.job.type,
+        status: 'queued',
+        tmpId: waitingItem.job.tmpId,
+      });
+    }
+  }
+  
+  res.json({ jobs: userJobs });
+});
+
 app.get('/api/jobs/settings', requireAuth as any, (_req, res) => {
   res.json({ maxConcurrent: MAX_CONCURRENT, proxyUrl: PROXY_URL || '', limitRateKbps: LIMIT_RATE ?? 0 });
 });
