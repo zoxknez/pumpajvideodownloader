@@ -12,6 +12,7 @@ const nextConfig = {
     const path = require('path');
     config.resolve.alias = {
       ...config.resolve.alias,
+      '@': path.resolve(__dirname, '.'),
       '@deskkgui': path.resolve(__dirname, '../deskkgui/src'),
       // OVERRIDE: Desktop AuthProvider → Web AuthProvider (Supabase)
       '@deskkgui/components/AuthProvider': path.resolve(__dirname, './components/AuthProvider.tsx'),
