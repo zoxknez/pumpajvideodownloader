@@ -69,6 +69,9 @@ export function mountPromMetrics(app: any, registry: MetricsRegistry) {
         '# HELP pumpaj_reaper_last_run_timestamp_seconds Unix timestamp of last reaper run',
         '# TYPE pumpaj_reaper_last_run_timestamp_seconds gauge',
         `pumpaj_reaper_last_run_timestamp_seconds ${registry.reaper.lastRunTimestamp}`,
+        '# HELP pumpaj_reaper_finalize_race_total Race conditions between reaper and finalizeJob',
+        '# TYPE pumpaj_reaper_finalize_race_total counter',
+        `pumpaj_reaper_finalize_race_total ${registry.reaper.reaperFinalizeRace}`,
         '',
         prometheusBody,
       ].join('\n')

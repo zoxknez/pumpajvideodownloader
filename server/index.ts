@@ -15,7 +15,7 @@ import { spawnSync } from 'node:child_process';
 import { getLogger } from './core/logger.js';
 import { loadConfig } from './core/config.js';
 import { isUrlAllowed } from './core/urlAllow.js';
-import { buildCorsOrigin, isOriginAllowed } from './core/corsOrigin.js';
+import { isOriginAllowed } from './core/corsOrigin.js';
 import { appendHistory, readHistory, updateHistory, removeHistory, clearHistory } from './core/history.js';
 import { readServerSettings, writeServerSettings } from './core/settings.js';
 import { requestLogger } from './middleware/requestLog.js';
@@ -41,10 +41,41 @@ import { metricsMiddleware, signIssued, signTtl } from './middleware/httpMetrics
 import { signToken } from './core/signed.js';
 import { traceContext } from './middleware/trace.js';
 import { analyzeRateLimit, batchRateLimit } from './middleware/rateLimit.js';
+import { SseHub } from './core/SseHub.js';
+import { JobManager } from './core/JobManager.js';
+import { Downloader } from './core/Downloader.js';
+import { ffmpegEnabled } from './core/env.js';
+import { setNoStore, setSseHeaders, setDownloadHeaders, safeKill, appendVary } from './core/http.js';
+import { assertFreeSpace } from './core/jobHelpers.js';
+import {
+  makeHeaders,
+  coerceAudioFormat,
+  selectVideoFormat,
+  selectAudioFormat,
+  parseDlLine,
+  hasProgressHint,
+  chosenLimitRateK,
+  findProducedFile,
+  safeName,
+  getFreeDiskBytes,
+  formatDuration,
+  speedyDlArgs,
+  trapChildPromise,
+  DEFAULT_AUDIO_FORMAT,
+} from './core/ytHelpers.js';
+import { setupDownloadRoutes } from './routes/downloads.js';
+import { setupJobRoutes } from './routes/jobs.js';
+import { setupSseRoutes } from './routes/sse.js';
+import { setupLogRoutes } from './routes/logs.js';
 
 // ---- App init / middleware ----
 const log = getLogger('server');
 const cfg = loadConfig();
+
+// NOTE: noCheckCertificates is currently hard-coded to true in all yt-dlp calls.
+// If you make this configurable via env var in future, add warning log here:
+// if (process.env.NO_CHECK_CERTS === '1') { log.warn('insecure_tls_enabled', 'TLS verification disabled'); }
+
 export const metrics = createMetricsRegistry();
 const proxyDownload = createProxyDownloadHandler(cfg, metrics);
 const MIN_FREE_DISK_BYTES =
@@ -98,8 +129,14 @@ app.use((req, res, next) => {
     }
   } else if (!corsOriginEnv) {
     // Development mode - no CORS_ORIGIN set, allow all
-    res.setHeader('Access-Control-Allow-Origin', origin || '*');
-    res.setHeader('Access-Control-Allow-Credentials', 'true');
+    // CRITICAL: Only set credentials if we echo a concrete origin, NOT with wildcard
+    if (origin) {
+      res.setHeader('Access-Control-Allow-Origin', origin);
+      res.setHeader('Access-Control-Allow-Credentials', 'true');
+    } else {
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      // Do NOT set Access-Control-Allow-Credentials with wildcard (spec violation)
+    }
     if (req.method === 'OPTIONS') {
       log.debug(`CORS: ✅ Dev mode - allowing all origins`);
     }
@@ -156,8 +193,14 @@ app.use('/api/job/file/:id', metricsMiddleware('job-file'));
 app.use('/api/progress/:id', metricsMiddleware('progress'));
 
 // ========================
-// Globalno stanje poslova
+// Refactored: SSE + Job Management
 // ========================
+const sseHub = new SseHub(log, 20);
+const jobManager = new JobManager(log, sseHub, 2);
+const downloader = new Downloader(log);
+
+// Legacy compatibility - expose internal state for existing code
+// TODO: Postupno migrirati postojeći kod da koristi JobManager API umesto direktnog pristupa
 type Job = {
   id: string;
   type: 'video' | 'audio';
@@ -176,12 +219,16 @@ function bumpJobVersion(job?: Job) {
   job.version = Math.max(1, current + 1);
 }
 
+// Legacy Maps - gradually migrate to JobManager
 const jobs = new Map<string, Job>();
 type WaitingItem = { job: Job; run: () => void };
 const waiting: WaitingItem[] = [];
 const running = new Set<string>(); // jobIds
+
+// Legacy SSE - gradually migrate to SseHub
 const sseListeners = new Map<string, Set<Response>>();
 const sseBuffers = new Map<string, string[]>();
+const sseEventCounters = new Map<string, number>(); // Monotonic event ID per channel
 const SSE_BUFFER_SIZE = 20;
 
 Object.assign(app.locals as Record<string, unknown>, {
@@ -192,6 +239,9 @@ Object.assign(app.locals as Record<string, unknown>, {
   sseBuffers,
   minFreeDiskBytes: MIN_FREE_DISK_BYTES,
   metrics,
+  sseHub,
+  jobManager,
+  downloader,
 });
 
 let MAX_CONCURRENT = 2;
@@ -226,214 +276,8 @@ try {
 } catch {}
 
 // ========================
-// Pomoćne funkcije
-// ========================
-const trunc = (s: string, n = 100) => (s.length > n ? s.slice(0, n) : s);
-const safeName = (input: string, max = 100) =>
-  trunc((input || '').replace(/[\n\r"\\]/g, '').replace(/[^\w.-]+/g, '_'), max);
-
-function hasProgressHint(text: string, needles: string[]): boolean {
-  if (!text) return false;
-  const lower = text.toLowerCase();
-  return needles.some((needle) => lower.includes(needle));
-}
-
-function appendVary(res: Response, value: string) {
-  const existing = res.getHeader('Vary');
-  if (!existing) {
-    res.setHeader('Vary', value);
-    return;
-  }
-  const parts = String(existing)
-    .split(',')
-    .map((part) => part.trim())
-    .filter(Boolean);
-  if (!parts.includes(value)) parts.push(value);
-  res.setHeader('Vary', parts.join(', '));
-}
-
-function parseDfFreeBytes(output: string): number {
-  const lines = String(output || '').trim().split(/\r?\n/);
-  for (let i = lines.length - 1; i >= 0; i -= 1) {
-    const parts = lines[i]?.trim().split(/\s+/) ?? [];
-    if (parts.length >= 4) {
-      const availKb = Number(parts[3]);
-      if (Number.isFinite(availKb)) return availKb * 1024;
-    }
-  }
-  return -1;
-}
-
-function parseWmicFreeBytes(output: string, drive: string): number {
-  const normalizedDrive = drive.replace(/\\$/, '');
-  const lines = String(output || '').trim().split(/\r?\n/).slice(1);
-  for (const line of lines) {
-    if (!line || !line.includes(normalizedDrive)) continue;
-    const parts = line.trim().split(/\s+/);
-    if (parts.length >= 2) {
-      const free = Number(parts[1]);
-      if (Number.isFinite(free)) return free;
-    }
-  }
-  return -1;
-}
-
-// df / wmic: best-effort slobodan prostor (bytes ili -1)
-function getFreeDiskBytes(dir: string): number {
-  try {
-    if (process.platform !== 'win32') {
-      const out = spawnSync('df', ['-k', dir], { encoding: 'utf8' });
-      if (out.status === 0) {
-        const parsed = parseDfFreeBytes(String(out.stdout || ''));
-        if (parsed >= 0) return parsed;
-      }
-    } else {
-      const out = spawnSync('wmic', ['logicaldisk', 'get', 'size,freespace,caption'], { encoding: 'utf8' });
-      if (out.status === 0) {
-        const drive = path.parse(path.resolve(dir)).root;
-        const parsed = parseWmicFreeBytes(String(out.stdout || ''), drive);
-        if (parsed >= 0) return parsed;
-      }
-    }
-  } catch {}
-  return -1;
-}
-
-function formatDuration(seconds: number): string {
-  const s = Math.max(0, Math.floor(seconds));
-  const days = Math.floor(s / 86_400);
-  const hours = Math.floor((s % 86_400) / 3_600);
-  const minutes = Math.floor((s % 3_600) / 60);
-  const secs = s % 60;
-  const parts: string[] = [];
-  if (days) parts.push(`${days}d`);
-  if (hours || parts.length) parts.push(`${hours}h`);
-  parts.push(`${minutes}m`);
-  if (!parts.length || (!days && !hours)) parts.push(`${secs}s`);
-  return parts.join(' ');
-}
-
-function speedyDlArgs() {
-  return {
-    concurrentFragments: 10,
-    httpChunkSize: '10M',
-    socketTimeout: 20,
-    retries: 10,
-    fragmentRetries: 10,
-  } as const;
-}
-
-function makeHeaders(u: string): string[] {
-  try {
-    const h = new URL(u).hostname.toLowerCase();
-    if (h.includes('youtube.com') || h.includes('youtu.be')) {
-      return ['referer: https://www.youtube.com', 'user-agent: Mozilla/5.0'];
-    }
-    if (h.includes('x.com') || h.includes('twitter.com')) {
-      return ['referer: https://x.com', 'user-agent: Mozilla/5.0'];
-    }
-    if (h.includes('instagram.com')) {
-      return ['referer: https://www.instagram.com', 'user-agent: Mozilla/5.0'];
-    }
-    if (h.includes('facebook.com') || h.includes('fbcdn.net')) {
-      return ['referer: https://www.facebook.com', 'user-agent: Mozilla/5.0'];
-    }
-  } catch {}
-  return ['user-agent: Mozilla/5.0'];
-}
-
-const AUDIO_FORMAT_ALIASES = new Map<string, string>([
-  ['m4a', 'm4a'],
-  ['m4b', 'm4a'],
-  ['mp4a', 'm4a'],
-  ['aac', 'aac'],
-  ['mp3', 'mp3'],
-  ['mpeg', 'mp3'],
-  ['mpga', 'mp3'],
-  ['opus', 'opus'],
-  ['vorbis', 'vorbis'],
-  ['ogg', 'vorbis'],
-  ['oga', 'vorbis'],
-  ['flac', 'flac'],
-  ['wav', 'wav'],
-  ['alac', 'alac'],
-]);
-const DEFAULT_AUDIO_FORMAT = 'm4a';
-
-function coerceAudioFormat(input: unknown, fallback = DEFAULT_AUDIO_FORMAT): string | null {
-  const raw = typeof input === 'string' ? input : input == null ? '' : String(input);
-  const trimmed = raw.trim().toLowerCase();
-  if (!trimmed) return fallback;
-  if (trimmed === 'best') return fallback;
-  return AUDIO_FORMAT_ALIASES.get(trimmed) ?? null;
-}
-
-/**
- * Returns video format selector based on FFmpeg availability and policy.
- * FFmpeg-free mode: progressive streams only (typically up to 720p on YouTube).
- * FFmpeg mode: adaptive merge (best video + best audio).
- */
-function selectVideoFormat(policy: { maxHeight: number }): string {
-  const ffmpegEnabled = process.env.ENABLE_FFMPEG !== 'false';
-  if (ffmpegEnabled) {
-    // Adaptive streams: merge best video + audio (requires FFmpeg)
-    return `bv*[height<=?${policy.maxHeight}]+ba/b[height<=?${policy.maxHeight}]`;
-  } else {
-    // Progressive streams only: pre-muxed video+audio container
-    // Fallback chain: exact height match → any progressive with both codecs → best available
-    return `b[height<=?${policy.maxHeight}][vcodec!=none][acodec!=none]/b[acodec!=none][vcodec!=none]/best[height<=?${policy.maxHeight}]`;
-  }
-}
-
-/**
- * Returns audio format options based on FFmpeg availability.
- * FFmpeg-free mode: direct stream (bestaudio[ext=m4a]/bestaudio/best).
- * FFmpeg mode: extract and convert to target format.
- */
-function selectAudioFormat(targetFormat: string): { format?: string; extractAudio?: boolean; audioFormat?: string } {
-  const ffmpegEnabled = process.env.ENABLE_FFMPEG !== 'false';
-  if (ffmpegEnabled) {
-    // Extract and convert audio (requires FFmpeg)
-    return { extractAudio: true, audioFormat: targetFormat };
-  } else {
-    // Direct audio stream, prefer m4a container
-    return { format: 'bestaudio[ext=m4a]/bestaudio/best' };
-  }
-}
-
-function trapChildPromise(child: any, label: string) {
-  if (child && typeof child.catch === 'function') {
-    child.catch((err: any) => {
-      try {
-        log.error(label, err?.message || err);
-      } catch {}
-    });
-  }
-}
-
-// Unified: izvuče %/brzinu/ETA iz yt-dlp linije
-function parseDlLine(text: string): { pct?: number; speed?: string; eta?: string } {
-  const pctMatch = text.match(/(\d{1,3}(?:\.\d+)?)%/);
-  const speedMatch = text.match(/\bat\s+([\d.,]+\s*(?:[KMG]?i?B)\/s)\b/i);
-  const etaMatch = text.match(/ETA\s+(\d{2}:\d{2}(?::\d{2})?)/i);
-  const out: { pct?: number; speed?: string; eta?: string } = {};
-  if (pctMatch) out.pct = Math.max(0, Math.min(100, parseFloat(pctMatch[1])));
-  if (speedMatch) out.speed = speedMatch[1].replace(/\s+/g, '');
-  if (etaMatch) out.eta = etaMatch[1];
-  return out;
-}
-
-function chosenLimitRateK(policyLimitKbps?: number | null): string | undefined {
-  const gl = Number(LIMIT_RATE || 0);
-  const pl = Number(policyLimitKbps || 0);
-  const chosen = gl > 0 && pl > 0 ? Math.min(gl, pl) : gl > 0 ? gl : pl > 0 ? pl : 0;
-  return chosen > 0 ? `${chosen}K` : undefined;
-}
-
-function findProducedFile(tmpDir: string, tmpId: string, exts: string[]) {
-  const list = fs.readdirSync(tmpDir);
-  return list.find((f) => f.startsWith(tmpId + '.') && exts.some((e) => f.toLowerCase().endsWith(e)));
-}
+// Pomoćne funkcije sada importovane iz core/ytHelpers.ts
+// appendVary je iz core/http.ts
 
 // ========================
 // SSE listeners & ring buffer
@@ -451,7 +295,16 @@ function removeSseListener(id: string, res: Response) {
 }
 
 function pushSse(id: string, payload: any, event?: string, explicitId?: number) {
-  const eventId = explicitId ?? Date.now();
+  // Use monotonic counter per channel for stable event IDs (immune to clock jumps)
+  let eventId: number;
+  if (explicitId !== undefined) {
+    eventId = explicitId;
+  } else {
+    const current = sseEventCounters.get(id) ?? 0;
+    eventId = current + 1;
+    sseEventCounters.set(id, eventId);
+  }
+  
   const frame = `${event ? `event: ${event}\n` : ''}id: ${eventId}\n` + `data: ${JSON.stringify(payload)}\n\n`;
   let buf = sseBuffers.get(id);
   if (!buf) {
@@ -551,6 +404,8 @@ function finalizeJob(id: string, status: JobTerminalStatus, options: FinalizeJob
         try { sseListeners.delete(id); } catch {}
       }
     }
+    // Cleanup monotonic event counter
+    try { sseEventCounters.delete(id); } catch {}
   }
 
   // Bump job version to invalidate all signed tokens (download/progress URLs)
@@ -573,11 +428,43 @@ function finalizeJob(id: string, status: JobTerminalStatus, options: FinalizeJob
   try { running.delete(id); } catch {}
 }
 
+/**
+ * Close all SSE connections and clean up buffers for a history/stream ID.
+ * Use this for non-job streaming endpoints (/api/download/best, /audio, etc.)
+ * where there's no Job object but SSE cleanup is still needed.
+ */
+function endSseFor(id: string, status: 'completed' | 'failed' | 'canceled' = 'completed') {
+  try {
+    // Send final event
+    pushSse(id, { id, status }, 'end');
+    
+    // Close all connected SSE responses
+    const set = sseListeners.get(id);
+    if (set) {
+      for (const res of Array.from(set)) {
+        try { res.end(); } catch {}
+        try { set.delete(res); } catch {}
+      }
+      if (set.size === 0) {
+        try { sseListeners.delete(id); } catch {}
+      }
+    }
+    
+    // Clean up ring buffer (CRITICAL for memory leak prevention)
+    sseBuffers.delete(id);
+    
+    // Clean up throttle
+    clearHistoryThrottle(id);
+  } catch (err) {
+    log.error('endSseFor_failed', { id, error: String(err) });
+  }
+}
+
 Object.assign(app.locals as Record<string, unknown>, {
   finalizeJob,
+  endSseFor,
   pushSse,
   emitProgress,
-  minFreeDiskBytes: MIN_FREE_DISK_BYTES,
 });
 
 function schedule() {
@@ -656,6 +543,22 @@ function summarizeBatch(b: Batch) {
 app.get('/health', (_req, res) => res.json({ ok: true }));
 app.get('/ready', (_req, res) => res.json({ ok: true }));
 
+// Internal stats endpoint (for development/monitoring)
+app.get('/api/stats', requireAuth as any, (_req, res) => {
+  res.json({
+    sse: sseHub.getStats(),
+    jobs: jobManager.getStats(),
+    queue: jobManager.getQueueInfo(),
+    legacy: {
+      jobs: jobs.size,
+      waiting: waiting.length,
+      running: running.size,
+      sseListeners: sseListeners.size,
+      sseBuffers: sseBuffers.size,
+    },
+  });
+});
+
 app.get('/', (_req, res) => {
   res.type('text/html').send(`<!doctype html>
 <html lang="en"><head>
@@ -696,8 +599,29 @@ mountAuthRoutes(app);
 app.post('/auth/activate', authActivate);
 
 // ========================
-// /api/version (diag)
+// /api/version (diag) - with caching
 // ========================
+let ytVersionCache: { version: string; timestamp: number } | null = null;
+const YT_VERSION_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+
+function getYtDlpVersion(): string {
+  const now = Date.now();
+  if (ytVersionCache && (now - ytVersionCache.timestamp) < YT_VERSION_CACHE_TTL) {
+    return ytVersionCache.version;
+  }
+  
+  let version = '';
+  try {
+    const out = spawnSync('yt-dlp', ['--version'], { encoding: 'utf8', timeout: 2000 });
+    if (out?.status === 0) version = String(out.stdout || '').trim();
+  } catch (err) {
+    log.warn('ytdlp_version_check_failed', { error: String(err) });
+  }
+  
+  ytVersionCache = { version, timestamp: now };
+  return version;
+}
+
 app.get('/api/version', (_req, res) => {
   try {
     let pkg: any = {};
@@ -705,11 +629,7 @@ app.get('/api/version', (_req, res) => {
       const p = path.join(process.cwd(), 'package.json');
       if (fs.existsSync(p)) pkg = JSON.parse(fs.readFileSync(p, 'utf8'));
     } catch {}
-    let ytVersion = '';
-    try {
-      const out = spawnSync('yt-dlp', ['--version'], { encoding: 'utf8' });
-      if (out?.status === 0) ytVersion = String(out.stdout || '').trim();
-    } catch {}
+    const ytVersion = getYtDlpVersion();
     const freeBytes = getFreeDiskBytes(os.tmpdir());
     res.json({
       name: pkg?.name || 'yt-dlp-server',
@@ -752,68 +672,8 @@ app.get('/api/version', (_req, res) => {
 });
 
 // ========================
-// Logs (tail/recent/download)
+// Log routes handled by routes/logs.ts
 // ========================
-app.get('/api/logs/tail', requireAuth as any, (req, res) => {
-  try {
-    const max = Math.max(1, Math.min(500, parseInt(String(req.query.lines || '200'), 10) || 200));
-    const logDir = path.resolve(process.cwd(), 'logs');
-    const logFile = path.join(logDir, 'app.log');
-    if (!fs.existsSync(logFile)) return res.json({ lines: [] });
-    const buf = fs.readFileSync(logFile, 'utf8');
-    const tail = buf.split(/\r?\n/).slice(-max);
-    res.json({ lines: tail });
-  } catch (err: any) {
-    res.status(500).json({ error: 'tail_failed', details: String(err?.message || err) });
-  }
-});
-
-app.get('/api/logs/recent', requireAuth as any, (req, res) => {
-  try {
-    const logDir = path.resolve(process.cwd(), 'logs');
-    const logFile = path.join(logDir, 'app.log');
-    if (!fs.existsSync(logFile)) return res.json({ lines: [] });
-    const max = Math.max(1, Math.min(1000, parseInt(String(req.query.lines || '300'), 10) || 300));
-    const level = String(req.query.level || '').toLowerCase();
-    const q = String(req.query.q || '').trim().toLowerCase();
-    let lines = fs.readFileSync(logFile, 'utf8').split(/\r?\n/).filter(Boolean);
-    if (level && ['debug', 'info', 'warn', 'error'].includes(level)) {
-      const token = `| ${level.toUpperCase()} |`;
-      lines = lines.filter((l) => l.includes(token));
-    }
-    if (q) lines = lines.filter((l) => l.toLowerCase().includes(q));
-    const out = lines.slice(-max);
-    res.json({ lines: out, count: out.length });
-  } catch (err: any) {
-    res.status(500).json({ error: 'recent_failed', details: String(err?.message || err) });
-  }
-});
-
-app.get('/api/logs/download', requireAuth as any, (req, res) => {
-  try {
-    const logDir = path.resolve(process.cwd(), 'logs');
-    const logFile = path.join(logDir, 'app.log');
-    if (!fs.existsSync(logFile)) {
-      res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-      return res.end('');
-    }
-    const max = Math.max(1, Math.min(5000, parseInt(String(req.query.lines || '1000'), 10) || 1000));
-    const level = String(req.query.level || '').toLowerCase();
-    const q = String(req.query.q || '').trim().toLowerCase();
-    let lines = fs.readFileSync(logFile, 'utf8').split(/\r?\n/).filter(Boolean);
-    if (level && ['debug', 'info', 'warn', 'error'].includes(level)) {
-      const token = `| ${level.toUpperCase()} |`;
-      lines = lines.filter((l) => l.includes(token));
-    }
-    if (q) lines = lines.filter((l) => l.toLowerCase().includes(q));
-    const out = lines.slice(-max).join('\n');
-    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-    res.setHeader('Content-Disposition', 'attachment; filename="logs.txt"');
-    res.end(out);
-  } catch (err: any) {
-    res.status(500).json({ error: 'download_failed', details: String(err?.message || err) });
-  }
-});
 
 // ========================
 // History CRUD
@@ -829,7 +689,7 @@ app.delete('/api/history/:id', requireAuth as any, (req, res) => {
     if (job) {
       const idx = waiting.findIndex((w) => w.job.id === id);
       if (idx >= 0) waiting.splice(idx, 1);
-      try { job.child?.kill('SIGTERM'); } catch {}
+      safeKill(job.child);
       finalizeJob(id, 'canceled', { job, keepJob: false, keepFiles: false });
     }
     removeHistory(id);
@@ -1026,880 +886,47 @@ app.post('/api/get-url', requireAuth as any, async (req, res, next: NextFunction
 });
 
 // ========================
-// /api/download/best (stream)
+// Download Routes (Refactored to routes/downloads.ts)
 // ========================
-app.get('/api/download/best', requireAuth as any, async (req: any, res) => {
-  const sourceUrl = (req.query.url as string) || '';
-  const title = (req.query.title as string) || 'video';
-  if (!isUrlAllowed(sourceUrl, cfg)) return res.status(400).json({ error: 'invalid_url' });
-  try { await assertPublicHttpHost(sourceUrl); } catch (e: any) { return res.status(400).json({ ok: false, error: { code: e?.code || 'SSRF_FORBIDDEN', message: e?.message || 'Forbidden host' } }); }
-
-  const tmp = fs.realpathSync(os.tmpdir());
-  const id = randomUUID();
-  const outPath = path.join(tmp, `${id}.%(ext)s`);
-  let histId: string | undefined;
-
-  try {
-    const policy = policyFor(req.user?.plan);
-    log.info('download_best_start', sourceUrl);
-    const hist = appendHistory({ title, url: sourceUrl, type: 'video', format: 'MP4', status: 'in-progress' });
-    histId = hist.id;
-    emitProgress(hist.id, { progress: 0, stage: 'starting' });
-
-    let stream: fs.ReadStream | null = null;
-
-    const child = (ytdlp as any).exec(
-      sourceUrl,
-      {
-        format: selectVideoFormat(policy),
-        output: outPath,
-        addHeader: makeHeaders(sourceUrl),
-        restrictFilenames: true,
-        noCheckCertificates: true,
-        noWarnings: true,
-        newline: true,
-        proxy: PROXY_URL,
-        limitRate: chosenLimitRateK(policy.speedLimitKbps),
-        ...(cfg.maxFileSizeMb ? { maxFilesize: `${cfg.maxFileSizeMb}M` } : {}),
-        ...(cfg.maxDurationSec ? { matchFilter: `duration <= ${cfg.maxDurationSec}` } : {}),
-        ...speedyDlArgs(),
-      },
-      { env: cleanedChildEnv(process.env) }
-    );
-
-    let aborted = false;
-    let completed = false;
-    const handleAbort = () => {
-      if (aborted || res.writableFinished) return;
-      aborted = true;
-      try { child.kill('SIGTERM'); } catch {}
-      try { stream?.destroy(); } catch {}
-      try { updateHistory(hist.id, { status: 'canceled' }); } catch {}
-      try { clearHistoryThrottle(hist.id); } catch {}
-      try { emitProgress(hist.id, { stage: 'canceled' }); } catch {}
-      try { pushSse(hist.id, { id: hist.id, status: 'canceled' }, 'end'); } catch {}
-      try { sseListeners.delete(hist.id); } catch {}
-    };
-    res.on('close', handleAbort);
-    res.on('aborted', handleAbort);
-
-    const onProgress = (buf: Buffer) => {
-      const text = buf.toString();
-      const { pct } = parseDlLine(text);
-      if (typeof pct === 'number') {
-        updateHistoryThrottled(hist.id, pct);
-        emitProgress(hist.id, { progress: pct, stage: 'downloading' });
-      }
-      if (hasProgressHint(text, ['merging formats', 'merging'])) {
-        updateHistoryThrottled(hist.id, 95);
-        emitProgress(hist.id, { progress: 95, stage: 'merging' });
-      }
-    };
-    child.stdout?.on('data', onProgress);
-    child.stderr?.on('data', onProgress);
-
-    await new Promise<void>((resolve, reject) => {
-      child.on('error', reject);
-      child.on('close', (code: number) => (code === 0 ? resolve() : reject(new Error(`yt-dlp exited with code ${code}`))));
-    });
-
-    const produced = findProducedFile(tmp, id, ['.mp4', '.mkv', '.webm']);
-    if (!produced) return res.status(500).json({ error: 'output_not_found' });
-
-    const full = path.join(tmp, produced);
-    const stat = fs.statSync(full);
-    const ext = path.extname(produced).toLowerCase();
-    const videoType = ext === '.mkv' ? 'video/x-matroska' : ext === '.webm' ? 'video/webm' : 'video/mp4';
-    res.setHeader('Content-Type', videoType);
-    const safe = safeName(title || 'video');
-    res.setHeader('Content-Disposition', `attachment; filename="${safe}${ext}"`);
-    res.setHeader('Content-Length', String(stat.size));
-    res.setHeader('Cache-Control', 'no-store');
-    res.setHeader('Accept-Ranges', 'bytes');
-    if (req.method === 'HEAD') return res.end();
-
-    stream = fs.createReadStream(full);
-    stream.pipe(res);
-    stream.on('close', () => { fs.unlink(full, () => {}); });
-
-    const finalize = () => {
-      if (aborted || completed) return;
-      completed = true;
-      updateHistory(hist.id, { status: 'completed', progress: 100, size: `${Math.round(stat.size / 1024 / 1024)} MB` });
-      clearHistoryThrottle(hist.id);
-      emitProgress(hist.id, { progress: 100, stage: 'completed', size: stat.size });
-      try { pushSse(hist.id, { id: hist.id, status: 'completed' }, 'end'); } catch {}
-      try { sseListeners.delete(hist.id); } catch {}
-    };
-
-    res.on('finish', finalize);
-  } catch (err: any) {
-    log.error('download_best_failed', err?.message || err);
-    if (histId) {
-      updateHistory(histId, { status: 'failed' });
-      clearHistoryThrottle(histId);
-      try {
-        emitProgress(histId, { stage: 'failed' });
-        pushSse(histId, { id: histId, status: 'failed' }, 'end');
-        try { sseListeners.delete(histId); } catch {}
-      } catch {}
-    }
-    res.status(500).json({ error: 'download_failed', details: String(err?.stderr || err?.message || err) });
-  }
-});
+setupDownloadRoutes(
+  app,
+  requireAuth,
+  cfg,
+  log,
+  { appendHistory, updateHistory, updateHistoryThrottled },
+  { emitProgress, endSseFor },
+  { PROXY_URL, MIN_FREE_DISK_BYTES }
+);
 
 // ========================
-// /api/download/audio (stream)
+// Job Routes (Refactored to routes/jobs.ts)
 // ========================
-app.get('/api/download/audio', requireAuth as any, async (req: any, res) => {
-  const sourceUrl = (req.query.url as string) || '';
-  const title = (req.query.title as string) || 'audio';
-  const fmt = coerceAudioFormat(req.query.format, DEFAULT_AUDIO_FORMAT);
-  if (!fmt) return res.status(400).json({ error: 'invalid_format' });
-  if (!isUrlAllowed(sourceUrl, cfg)) return res.status(400).json({ error: 'invalid_url' });
-  try { await assertPublicHttpHost(sourceUrl); } catch (e: any) { return res.status(400).json({ ok: false, error: { code: e?.code || 'SSRF_FORBIDDEN', message: e?.message || 'Forbidden host' } }); }
-
-  const tmp = fs.realpathSync(os.tmpdir());
-  const id = randomUUID();
-  const outPath = path.join(tmp, `${id}.%(ext)s`);
-  let histId: string | undefined;
-
-  try {
-    const policy = policyFor(req.user?.plan);
-    log.info('download_audio_start', sourceUrl);
-    const hist = appendHistory({ title, url: sourceUrl, type: 'audio', format: fmt.toUpperCase(), status: 'in-progress' });
-    histId = hist.id;
-    emitProgress(hist.id, { progress: 0, stage: 'starting' });
-
-    let stream: fs.ReadStream | null = null;
-
-    const child = (ytdlp as any).exec(
-      sourceUrl,
-      {
-        ...selectAudioFormat(fmt),
-        output: outPath,
-        addHeader: makeHeaders(sourceUrl),
-        restrictFilenames: true,
-        noCheckCertificates: true,
-        noWarnings: true,
-        newline: true,
-        proxy: PROXY_URL,
-        limitRate: chosenLimitRateK(policy.speedLimitKbps),
-        ...(cfg.maxFileSizeMb ? { maxFilesize: `${cfg.maxFileSizeMb}M` } : {}),
-        ...(cfg.maxDurationSec ? { matchFilter: `duration <= ${cfg.maxDurationSec}` } : {}),
-      },
-      { env: cleanedChildEnv(process.env) }
-    );
-
-    let aborted = false;
-    let completed = false;
-    const handleAbort = () => {
-      if (aborted || res.writableFinished) return;
-      aborted = true;
-      try { child.kill('SIGTERM'); } catch {}
-      try { stream?.destroy(); } catch {}
-      try { updateHistory(hist.id, { status: 'canceled' }); } catch {}
-      try { clearHistoryThrottle(hist.id); } catch {}
-      try { emitProgress(hist.id, { stage: 'canceled' }); } catch {}
-      try { pushSse(hist.id, { id: hist.id, status: 'canceled' }, 'end'); } catch {}
-      try { sseListeners.delete(hist.id); } catch {}
-    };
-    res.on('close', handleAbort);
-    res.on('aborted', handleAbort);
-
-    const onProgress = (buf: Buffer) => {
-      const text = buf.toString();
-      const { pct } = parseDlLine(text);
-      if (typeof pct === 'number') { updateHistoryThrottled(hist.id, pct); emitProgress(hist.id, { progress: pct, stage: 'downloading' }); }
-      if (hasProgressHint(text, ['extractaudio', 'destination', 'convert', 'merging'])) {
-        updateHistoryThrottled(hist.id, 90);
-        emitProgress(hist.id, { progress: 90, stage: 'converting' });
-      }
-    };
-    child.stdout?.on('data', onProgress);
-    child.stderr?.on('data', onProgress);
-
-    await new Promise<void>((resolve, reject) => {
-      child.on('error', reject);
-      child.on('close', (code: number) => (code === 0 ? resolve() : reject(new Error(`yt-dlp exited with code ${code}`))));
-    });
-
-    const produced = findProducedFile(tmp, id, ['.mp3', '.m4a', '.aac', '.opus', '.flac', '.wav', '.ogg', '.oga', '.alac']);
-    if (!produced) return res.status(500).json({ error: 'output_not_found' });
-
-    const full = path.join(tmp, produced);
-    const stat = fs.statSync(full);
-    const extname = path.extname(produced).replace(/^\./, '').toLowerCase();
-    const contentType =
-      extname === 'mp3' ? 'audio/mpeg'
-      : extname === 'opus' ? 'audio/opus'
-      : extname === 'ogg' || extname === 'oga' || extname === 'vorbis' ? 'audio/ogg'
-      : extname === 'wav' ? 'audio/wav'
-      : 'audio/mp4';
-    res.setHeader('Content-Type', contentType);
-    const safe = safeName(title || 'audio');
-    const ext = extname || fmt;
-    res.setHeader('Content-Disposition', `attachment; filename="${safe}.${ext}"`);
-    res.setHeader('Content-Length', String(stat.size));
-    res.setHeader('Cache-Control', 'no-store');
-    res.setHeader('Accept-Ranges', 'bytes');
-    if (req.method === 'HEAD') return res.end();
-
-    stream = fs.createReadStream(full);
-    stream.pipe(res);
-    stream.on('close', () => { fs.unlink(full, () => {}); });
-
-    const finalize = () => {
-      if (aborted || completed) return;
-      completed = true;
-      updateHistory(hist.id, { status: 'completed', progress: 100, size: `${Math.round(stat.size / 1024 / 1024)} MB` });
-      clearHistoryThrottle(hist.id);
-      emitProgress(hist.id, { progress: 100, stage: 'completed', size: stat.size });
-      try { pushSse(hist.id, { id: hist.id, status: 'completed' }, 'end'); } catch {}
-      try { sseListeners.delete(hist.id); } catch {}
-    };
-
-    res.on('finish', finalize);
-  } catch (err: any) {
-    log.error('download_audio_failed', err?.message || err);
-    if (histId) {
-      updateHistory(histId, { status: 'failed' });
-      clearHistoryThrottle(histId);
-      try {
-        emitProgress(histId, { stage: 'failed' });
-        pushSse(histId, { id: histId, status: 'failed' }, 'end');
-        try { sseListeners.delete(histId); } catch {}
-      } catch {}
-    }
-    res.status(500).json({ error: 'download_failed', details: String(err?.stderr || err?.message || err) });
-  }
-});
+setupJobRoutes(
+  app,
+  requireAuth,
+  cfg,
+  log,
+  { appendHistory, updateHistory, updateHistoryThrottled, clearHistoryThrottle, readHistory },
+  { emitProgress },
+  { jobs, running, waiting, schedule, finalizeJob, readHistory, updateHistory, clearHistoryThrottle, updateHistoryThrottled, emitProgress },
+  { PROXY_URL, MIN_FREE_DISK_BYTES }
+);
 
 // ========================
-// /api/download/chapter (sekcija)
+// SSE Routes (Refactored to routes/sse.ts)
 // ========================
-app.get('/api/download/chapter', requireAuth as any, async (req: any, res) => {
-  try {
-    const sourceUrl = String(req.query.url || '');
-    const start = Number(req.query.start || 0);
-    const end = Number(req.query.end || 0);
-    const title = String(req.query.title || 'clip');
-    const name = String(req.query.name || 'chapter');
-    const index = String(req.query.index || '1');
-    if (!isUrlAllowed(sourceUrl, cfg) || !Number.isFinite(start) || !(end > start)) {
-      return res.status(400).json({ error: 'invalid_params' });
-    }
-    await assertPublicHttpHost(sourceUrl);
-
-    const policy = policyFor(req.user?.plan);
-    if (!policy.allowChapters) return res.status(403).json({ error: 'CHAPTERS_NOT_ALLOWED' });
-
-    const tmp = fs.realpathSync(os.tmpdir());
-    const id = randomUUID();
-    const outPath = path.join(tmp, `${id}.%(ext)s`);
-    const section = `${Math.max(0, start)}-${end}`;
-
-    const child = (ytdlp as any).exec(
-      sourceUrl,
-      {
-        format: selectVideoFormat(policy),
-        output: outPath,
-        addHeader: makeHeaders(sourceUrl),
-        noCheckCertificates: true,
-        noWarnings: true,
-        downloadSections: section,
-        ...speedyDlArgs(),
-        ...(cfg.maxFileSizeMb ? { maxFilesize: `${cfg.maxFileSizeMb}M` } : {}),
-        ...(cfg.maxDurationSec ? { matchFilter: `duration <= ${cfg.maxDurationSec}` } : {}),
-      },
-      { env: cleanedChildEnv(process.env) }
-    );
-    trapChildPromise(child, 'yt_dlp_unhandled_clip');
-    trapChildPromise(child, 'yt_dlp_unhandled_clip_audio');
-    trapChildPromise(child, 'yt_dlp_unhandled_chapter');
-    await new Promise<void>((resolve, reject) => {
-      child.on('error', reject);
-      child.on('close', (code: number) => (code === 0 ? resolve() : reject(new Error(`yt-dlp exit ${code}`))));
-    });
-
-    const produced = findProducedFile(tmp, id, ['.mp4', '.mkv', '.webm']);
-    if (!produced) return res.status(500).json({ error: 'output_not_found' });
-
-    const full = path.join(tmp, produced);
-    const stat = fs.statSync(full);
-    res.setHeader('Content-Type', /\.mkv$/i.test(full) ? 'video/x-matroska' : /\.webm$/i.test(full) ? 'video/webm' : 'video/mp4');
-    const safeBase = safeName(String(title || 'clip'));
-    const safeChap = safeName(String(name || 'chapter'));
-    res.setHeader('Content-Disposition', `attachment; filename="${safeBase}.${index}_${safeChap}${path.extname(full)}"`);
-    res.setHeader('Content-Length', String(stat.size));
-    res.setHeader('Cache-Control', 'no-store');
-    res.setHeader('Accept-Ranges', 'bytes');
-    if (req.method === 'HEAD') return res.end();
-
-    const stream = fs.createReadStream(full);
-    const endStream = () => { try { stream.destroy(); } catch {} };
-    res.on('close', endStream);
-    res.on('aborted', endStream);
-    stream.pipe(res);
-    stream.on('close', () => { try { fs.unlinkSync(full); } catch {} });
-  } catch (err: any) {
-    log.error('download_chapter_failed', err?.message || err);
-    res.status(500).json({ error: 'download_failed' });
-  }
-});
+setupSseRoutes(
+  app,
+  requireAuthOrSigned,
+  progressBucket,
+  log,
+  { sseBuffers, addSseListener, removeSseListener, pushSse }
+);
 
 // ========================
-// Background jobs (queue)
+// Log Routes (Refactored to routes/logs.ts)
 // ========================
-app.post('/api/job/start/best', requireAuth as any, async (req: any, res: Response) => {
-  try {
-    const { url: sourceUrl, title = 'video' } = (req.body || {}) as { url?: string; title?: string };
-    if (!sourceUrl || !/^https?:\/\//i.test(sourceUrl) || !isUrlAllowed(sourceUrl, cfg)) return res.status(400).json({ error: 'invalid_url' });
-    await assertPublicHttpHost(sourceUrl);
-
-    const requestUser = {
-      id: req.user?.id ?? 'anon',
-      username: req.user?.username,
-      plan: req.user?.plan ?? 'FREE',
-      planExpiresAt: req.user?.planExpiresAt ?? undefined,
-    } as const;
-    const policyAtQueue = policyFor(requestUser.plan);
-
-    const tmpDir = os.tmpdir();
-    const tmpId = randomUUID();
-    const outPath = path.join(fs.realpathSync(tmpDir), `${tmpId}.%(ext)s`);
-
-    // disk guard
-    try {
-      const free = getFreeDiskBytes(tmpDir);
-      if (MIN_FREE_DISK_BYTES > 0 && free > -1 && free < MIN_FREE_DISK_BYTES) {
-        return res.status(507).json({ error: 'INSUFFICIENT_STORAGE' });
-      }
-    } catch {}
-
-    const hist = appendHistory({ title, url: sourceUrl, type: 'video', format: 'MP4', status: 'queued' });
-  const job: Job = { id: hist.id, type: 'video', tmpId, tmpDir, userId: requestUser.id, concurrencyCap: policyAtQueue.concurrentJobs, version: 1 };
-    jobs.set(hist.id, job);
-    emitProgress(hist.id, { progress: 0, stage: 'queued' });
-
-    const run = () => {
-      log.info('job_spawn_best', `url=${sourceUrl} user=${requestUser.id}`);
-      const policy = policyAtQueue;
-      const child = (ytdlp as any).exec(
-        sourceUrl,
-        {
-          format: selectVideoFormat(policy),
-          output: outPath,
-          addHeader: makeHeaders(sourceUrl),
-          restrictFilenames: true,
-          noCheckCertificates: true,
-          noWarnings: true,
-          newline: true,
-          proxy: PROXY_URL,
-          limitRate: chosenLimitRateK(policy.speedLimitKbps),
-          ...(cfg.maxFileSizeMb ? { maxFilesize: `${cfg.maxFileSizeMb}M` } : {}),
-          ...(cfg.maxDurationSec ? { matchFilter: `duration <= ${cfg.maxDurationSec}` } : {}),
-          ...ytDlpArgsFromPolicy(policy),
-          ...speedyDlArgs(),
-        },
-        { env: cleanedChildEnv(process.env) }
-      );
-      job.child = child as any;
-      trapChildPromise(child, 'yt_dlp_unhandled_job_best');
-
-      const onProgress = (buf: Buffer) => {
-        const text = buf.toString();
-        const { pct, speed, eta } = parseDlLine(text);
-        if (typeof pct === 'number') {
-          updateHistoryThrottled(hist.id, pct);
-          emitProgress(hist.id, { progress: pct, stage: 'downloading', speed, eta });
-        }
-        if (hasProgressHint(text, ['merging formats', 'merging'])) {
-          emitProgress(hist.id, { progress: 95, stage: 'merging', speed, eta });
-        }
-      };
-      child.stdout?.on('data', onProgress);
-      child.stderr?.on('data', onProgress);
-      child.on('error', (err: any) => { try { log.error('yt_dlp_error_best', err?.message || String(err)); } catch {} });
-      child.on('close', (code: number) => {
-        try { log.info('yt_dlp_close_best', `code=${code}`); } catch {}
-        running.delete(hist.id);
-        let succeeded = false;
-        try {
-          const cur = readHistory().find((x) => x.id === hist.id);
-          if (cur?.status === 'canceled') { schedule(); return; }
-          if (code === 0) {
-            const produced = findProducedFile(tmpDir, tmpId, ['.mp4', '.mkv', '.webm']);
-            if (produced) {
-              job.produced = produced;
-              const full = path.join(tmpDir, produced);
-              const stat = fs.statSync(full);
-              updateHistory(hist.id, { status: 'completed', progress: 100, size: `${Math.round(stat.size / 1024 / 1024)} MB` });
-              clearHistoryThrottle(hist.id);
-              emitProgress(hist.id, { progress: 100, stage: 'completed', size: stat.size });
-              finalizeJob(hist.id, 'completed', { job });
-              succeeded = true;
-            } else {
-              updateHistory(hist.id, { status: 'failed' });
-              clearHistoryThrottle(hist.id);
-            }
-          } else {
-            updateHistory(hist.id, { status: 'failed' });
-            clearHistoryThrottle(hist.id);
-          }
-        } catch {}
-        if (!succeeded) {
-          finalizeJob(hist.id, 'failed', { job, keepJob: false, keepFiles: false });
-        }
-        schedule();
-      });
-    };
-
-    waiting.push({ job, run });
-    schedule();
-    return res.json({ id: hist.id });
-  } catch (err: any) {
-    log.error('job_start_best_failed', err?.message || err);
-    return res.status(500).json({ error: 'job_start_failed' });
-  }
-});
-
-app.post('/api/job/start/audio', requireAuth as any, async (req: any, res: Response) => {
-  try {
-    const { url: sourceUrl, title = 'audio', format = DEFAULT_AUDIO_FORMAT } = (req.body || {}) as { url?: string; title?: string; format?: string };
-    if (!sourceUrl || !/^https?:\/\//i.test(sourceUrl) || !isUrlAllowed(sourceUrl, cfg)) return res.status(400).json({ error: 'invalid_url' });
-    await assertPublicHttpHost(sourceUrl);
-
-    const fmt = coerceAudioFormat(format, DEFAULT_AUDIO_FORMAT);
-    if (!fmt) return res.status(400).json({ error: 'invalid_format' });
-
-    const requestUser = {
-      id: req.user?.id ?? 'anon',
-      username: req.user?.username,
-      plan: req.user?.plan ?? 'FREE',
-      planExpiresAt: req.user?.planExpiresAt ?? undefined,
-    } as const;
-    const policyAtQueue = policyFor(requestUser.plan);
-
-    const tmpDir = os.tmpdir();
-    const tmpId = randomUUID();
-    const outPath = path.join(fs.realpathSync(tmpDir), `${tmpId}.%(ext)s`);
-
-    try {
-      const free = getFreeDiskBytes(tmpDir);
-      if (MIN_FREE_DISK_BYTES > 0 && free > -1 && free < MIN_FREE_DISK_BYTES) {
-        return res.status(507).json({ error: 'INSUFFICIENT_STORAGE' });
-      }
-    } catch {}
-
-    const hist = appendHistory({ title, url: sourceUrl, type: 'audio', format: fmt.toUpperCase(), status: 'queued' });
-  const job: Job = { id: hist.id, type: 'audio', tmpId, tmpDir, userId: requestUser.id, concurrencyCap: policyAtQueue.concurrentJobs, version: 1 };
-    jobs.set(hist.id, job);
-    emitProgress(hist.id, { progress: 0, stage: 'queued' });
-
-    const run = () => {
-      log.info('job_spawn_audio', `url=${sourceUrl} fmt=${fmt} user=${requestUser.id}`);
-      const policy = policyAtQueue;
-      const child = (ytdlp as any).exec(
-        sourceUrl,
-        {
-          ...selectAudioFormat(fmt),
-          output: outPath,
-          addHeader: makeHeaders(sourceUrl),
-          restrictFilenames: true,
-          noCheckCertificates: true,
-          noWarnings: true,
-          newline: true,
-          proxy: PROXY_URL,
-          limitRate: chosenLimitRateK(policy.speedLimitKbps),
-          ...(cfg.maxFileSizeMb ? { maxFilesize: `${cfg.maxFileSizeMb}M` } : {}),
-          ...(cfg.maxDurationSec ? { matchFilter: `duration <= ${cfg.maxDurationSec}` } : {}),
-          ...ytDlpArgsFromPolicy(policy),
-          ...speedyDlArgs(),
-        },
-        { env: cleanedChildEnv(process.env) }
-      );
-      job.child = child as any;
-      trapChildPromise(child, 'yt_dlp_unhandled_job_audio');
-
-      const onProgress = (buf: Buffer) => {
-        const text = buf.toString();
-        const { pct, speed, eta } = parseDlLine(text);
-        if (typeof pct === 'number') {
-          updateHistoryThrottled(hist.id, pct);
-          emitProgress(hist.id, { progress: pct, stage: 'downloading', speed, eta });
-        }
-        if (hasProgressHint(text, ['extractaudio', 'destination', 'convert', 'merging'])) {
-          emitProgress(hist.id, { progress: 90, stage: 'converting', speed, eta });
-        }
-      };
-      child.stdout?.on('data', onProgress);
-      child.stderr?.on('data', onProgress);
-      child.on('error', (err: any) => { try { log.error('yt_dlp_error_audio', err?.message || String(err)); } catch {} });
-      child.on('close', (code: number) => {
-        try { log.info('yt_dlp_close_audio', `code=${code}`); } catch {}
-        running.delete(hist.id);
-        let succeeded = false;
-        try {
-          const cur = readHistory().find((x) => x.id === hist.id);
-          if (cur?.status === 'canceled') { schedule(); return; }
-          if (code === 0) {
-            const produced = findProducedFile(tmpDir, tmpId, ['.mp3', '.m4a', '.aac', '.opus', '.flac', '.wav', '.ogg', '.oga', '.alac']);
-            if (produced) {
-              job.produced = produced;
-              const full = path.join(tmpDir, produced);
-              const stat = fs.statSync(full);
-              updateHistory(hist.id, { status: 'completed', progress: 100, size: `${Math.round(stat.size / 1024 / 1024)} MB` });
-              clearHistoryThrottle(hist.id);
-              emitProgress(hist.id, { progress: 100, stage: 'completed', size: stat.size });
-              finalizeJob(hist.id, 'completed', { job });
-              succeeded = true;
-            } else {
-              updateHistory(hist.id, { status: 'failed' });
-              clearHistoryThrottle(hist.id);
-            }
-          } else {
-            updateHistory(hist.id, { status: 'failed' });
-            clearHistoryThrottle(hist.id);
-          }
-        } catch {}
-        if (!succeeded) {
-          finalizeJob(hist.id, 'failed', { job, keepJob: false, keepFiles: false });
-        }
-        schedule();
-      });
-    };
-
-    waiting.push({ job, run });
-    schedule();
-    return res.json({ id: hist.id });
-  } catch (err: any) {
-    log.error('job_start_audio_failed', err?.message || err);
-    return res.status(500).json({ error: 'job_start_failed' });
-  }
-});
-
-// Clip
-app.post('/api/job/start/clip', requireAuth as any, async (req: any, res: Response) => {
-  try {
-    const { url: sourceUrl, title = 'clip', start, end } = (req.body || {}) as { url?: string; title?: string; start?: number; end?: number };
-    if (!sourceUrl || !/^https?:\/\//i.test(sourceUrl) || !isUrlAllowed(sourceUrl, cfg)) return res.status(400).json({ error: 'invalid_url' });
-    await assertPublicHttpHost(sourceUrl);
-    const s = Number(start), e = Number(end);
-    if (!Number.isFinite(s) || !Number.isFinite(e) || !(e > s)) return res.status(400).json({ error: 'invalid_range' });
-
-    const requestUser = {
-      id: req.user?.id ?? 'anon',
-      username: req.user?.username,
-      plan: req.user?.plan ?? 'FREE',
-      planExpiresAt: req.user?.planExpiresAt ?? undefined,
-    } as const;
-    const policyAtQueue = policyFor(requestUser.plan);
-
-    const section = `${Math.max(0, Math.floor(s))}-${Math.floor(e)}`;
-    const tmpDir = os.tmpdir();
-    const tmpId = randomUUID();
-    const outPath = path.join(fs.realpathSync(tmpDir), `${tmpId}.%(ext)s`);
-
-    try {
-      const free = getFreeDiskBytes(tmpDir);
-      if (MIN_FREE_DISK_BYTES > 0 && free > -1 && free < MIN_FREE_DISK_BYTES) {
-        return res.status(507).json({ error: 'INSUFFICIENT_STORAGE' });
-      }
-    } catch {}
-
-    const hist = appendHistory({ title, url: sourceUrl, type: 'video', format: 'MP4', status: 'queued' });
-  const job: Job = { id: hist.id, type: 'video', tmpId, tmpDir, userId: requestUser.id, concurrencyCap: policyAtQueue.concurrentJobs, version: 1 };
-    jobs.set(hist.id, job);
-    emitProgress(hist.id, { progress: 0, stage: 'queued' });
-
-    const run = () => {
-      log.info('job_spawn_clip', `url=${sourceUrl} ${section} user=${requestUser.id}`);
-      const policy = policyAtQueue;
-      const child = (ytdlp as any).exec(sourceUrl, {
-        format: selectVideoFormat(policy),
-        output: outPath,
-        addHeader: makeHeaders(sourceUrl),
-        noCheckCertificates: true,
-        noWarnings: true,
-        newline: true,
-        downloadSections: section,
-        proxy: PROXY_URL,
-        limitRate: chosenLimitRateK(policy.speedLimitKbps),
-        ...(cfg.maxFileSizeMb ? { maxFilesize: `${cfg.maxFileSizeMb}M` } : {}),
-        ...(cfg.maxDurationSec ? { matchFilter: `duration <= ${cfg.maxDurationSec}` } : {}),
-        ...ytDlpArgsFromPolicy(policy),
-        ...speedyDlArgs(),
-      });
-      job.child = child as any;
-      trapChildPromise(child, 'yt_dlp_unhandled_job_clip');
-
-      const onProgress = (buf: Buffer) => {
-        const { pct, speed, eta } = parseDlLine(buf.toString());
-        if (typeof pct === 'number') { updateHistoryThrottled(hist.id, pct); emitProgress(hist.id, { progress: pct, stage: 'downloading', speed, eta }); }
-      };
-      child.stdout?.on('data', onProgress);
-      child.stderr?.on('data', onProgress);
-      child.on('close', (code: number) => {
-        running.delete(hist.id);
-        let succeeded = false;
-        try {
-          const cur = readHistory().find((x) => x.id === hist.id);
-          if (cur?.status === 'canceled') { schedule(); return; }
-          if (code === 0) {
-            const produced = findProducedFile(tmpDir, tmpId, ['.mp4', '.mkv', '.webm']);
-            if (produced) {
-              job.produced = produced;
-              const full = path.join(tmpDir, produced);
-              const stat = fs.statSync(full);
-              updateHistory(hist.id, { status: 'completed', progress: 100, size: `${Math.round(stat.size / 1024 / 1024)} MB` });
-              clearHistoryThrottle(hist.id);
-              emitProgress(hist.id, { progress: 100, stage: 'completed', size: stat.size });
-              finalizeJob(hist.id, 'completed', { job });
-              succeeded = true;
-            } else { updateHistory(hist.id, { status: 'failed' }); clearHistoryThrottle(hist.id); }
-          } else { updateHistory(hist.id, { status: 'failed' }); clearHistoryThrottle(hist.id); }
-        } catch {}
-        if (!succeeded) {
-          finalizeJob(hist.id, 'failed', { job, keepJob: false, keepFiles: false });
-        }
-        schedule();
-      });
-    };
-
-    waiting.push({ job, run });
-    schedule();
-    return res.json({ id: hist.id });
-  } catch (err: any) {
-    log.error('job_start_clip_failed', err?.message || err);
-    return res.status(500).json({ error: 'job_start_failed' });
-  }
-});
-
-// Embed subs
-app.post('/api/job/start/embed-subs', requireAuth as any, async (req: any, res: Response) => {
-  try {
-    const { url: sourceUrl, title = 'video', lang, format = 'srt', container = 'mp4' } =
-      (req.body || {}) as { url?: string; title?: string; lang?: string; format?: string; container?: string };
-    if (!sourceUrl || !/^https?:\/\//i.test(sourceUrl) || !isUrlAllowed(sourceUrl, cfg)) return res.status(400).json({ error: 'invalid_url' });
-    await assertPublicHttpHost(sourceUrl);
-    if (!lang) return res.status(400).json({ error: 'missing_lang' });
-
-    const requestUser = {
-      id: req.user?.id ?? 'anon',
-      username: req.user?.username,
-      plan: req.user?.plan ?? 'FREE',
-      planExpiresAt: req.user?.planExpiresAt ?? undefined,
-    } as const;
-    const policyAtQueue = policyFor(requestUser.plan);
-
-    const fmt = /^(srt|vtt)$/i.test(String(format)) ? String(format).toLowerCase() : 'srt';
-    const cont = /^(mp4|mkv|webm)$/i.test(String(container)) ? String(container).toLowerCase() : 'mp4';
-
-    const tmpDir = os.tmpdir();
-    const tmpId = randomUUID();
-    const outPath = path.join(fs.realpathSync(tmpDir), `${tmpId}.%(ext)s`);
-
-    try {
-      const free = getFreeDiskBytes(tmpDir);
-      if (MIN_FREE_DISK_BYTES > 0 && free > -1 && free < MIN_FREE_DISK_BYTES) {
-        return res.status(507).json({ error: 'INSUFFICIENT_STORAGE' });
-      }
-    } catch {}
-
-    const hist = appendHistory({ title, url: sourceUrl, type: 'video', format: cont.toUpperCase(), status: 'queued' });
-  const job: Job = { id: hist.id, type: 'video', tmpId, tmpDir, userId: requestUser.id, concurrencyCap: policyAtQueue.concurrentJobs, version: 1 };
-    jobs.set(hist.id, job);
-    emitProgress(hist.id, { progress: 0, stage: 'queued' });
-
-    const run = () => {
-      log.info('job_spawn_embed_subs', `url=${sourceUrl} lang=${lang} fmt=${fmt} cont=${cont} user=${requestUser.id}`);
-      const policy = policyAtQueue;
-      const child = (ytdlp as any).exec(sourceUrl, {
-        format: 'bv*+ba/b',
-        writeSubs: true,
-        subLangs: lang,
-        subFormat: fmt,
-        output: outPath,
-        addHeader: makeHeaders(sourceUrl),
-        restrictFilenames: true,
-        noCheckCertificates: true,
-        noWarnings: true,
-        newline: true,
-        proxy: PROXY_URL,
-        limitRate: chosenLimitRateK(policy.speedLimitKbps),
-        ...(cfg.maxFileSizeMb ? { maxFilesize: `${cfg.maxFileSizeMb}M` } : {}),
-        ...(cfg.maxDurationSec ? { matchFilter: `duration <= ${cfg.maxDurationSec}` } : {}),
-        ...ytDlpArgsFromPolicy(policy),
-        ...speedyDlArgs(),
-      });
-      job.child = child as any;
-      trapChildPromise(child, 'yt_dlp_unhandled_job_embed_subs');
-
-      const onProgress = (buf: Buffer) => {
-        const text = buf.toString();
-        const { pct, speed, eta } = parseDlLine(text);
-        if (typeof pct === 'number') {
-          updateHistoryThrottled(hist.id, pct);
-          emitProgress(hist.id, { progress: pct, stage: 'downloading', speed, eta });
-        }
-        if (hasProgressHint(text, ['writing video subtitles', 'merging formats', 'merging', 'embedding subtitles'])) {
-          emitProgress(hist.id, { progress: 95, stage: 'embedding', speed, eta });
-        }
-      };
-      child.stdout?.on('data', onProgress);
-      child.stderr?.on('data', onProgress);
-      child.on('close', (code: number) => {
-        running.delete(hist.id);
-        let succeeded = false;
-        try {
-          const cur = readHistory().find((x) => x.id === hist.id);
-          if (cur?.status === 'canceled') { schedule(); return; }
-          if (code === 0) {
-            const produced = findProducedFile(tmpDir, tmpId, ['.mp4', '.mkv', '.webm']);
-            if (produced) {
-              job.produced = produced;
-              const full = path.join(tmpDir, produced);
-              const stat = fs.statSync(full);
-              updateHistory(hist.id, { status: 'completed', progress: 100, size: `${Math.round(stat.size / 1024 / 1024)} MB` });
-              clearHistoryThrottle(hist.id);
-              emitProgress(hist.id, { progress: 100, stage: 'completed', size: stat.size });
-              finalizeJob(hist.id, 'completed', { job });
-              succeeded = true;
-            } else { updateHistory(hist.id, { status: 'failed' }); clearHistoryThrottle(hist.id); }
-          } else { updateHistory(hist.id, { status: 'failed' }); clearHistoryThrottle(hist.id); }
-        } catch {}
-        if (!succeeded) {
-          finalizeJob(hist.id, 'failed', { job, keepJob: false, keepFiles: false });
-        }
-        schedule();
-      });
-    };
-
-    waiting.push({ job, run });
-    schedule();
-    return res.json({ id: hist.id });
-  } catch (err: any) {
-    log.error('job_start_embed_subs_failed', err?.message || err);
-    return res.status(500).json({ error: 'job_start_failed' });
-  }
-});
-
-// Convert/merge
-app.post('/api/job/start/convert', requireAuth as any, async (req: any, res: Response) => {
-  try {
-    const { url: sourceUrl, title = 'video', container = 'mp4' } = (req.body || {}) as { url?: string; title?: string; container?: string };
-    if (!sourceUrl || !/^https?:\/\//i.test(sourceUrl) || !isUrlAllowed(sourceUrl, cfg)) return res.status(400).json({ error: 'invalid_url' });
-    await assertPublicHttpHost(sourceUrl);
-
-    const requestUser = {
-      id: req.user?.id ?? 'anon',
-      username: req.user?.username,
-      plan: req.user?.plan ?? 'FREE',
-      planExpiresAt: req.user?.planExpiresAt ?? undefined,
-    } as const;
-    const policyAtQueue = policyFor(requestUser.plan);
-
-    const fmt = String(container).toLowerCase();
-    const valid = ['mp4', 'mkv', 'webm'];
-    const mergeOut: any = valid.includes(fmt) ? fmt : 'mp4';
-
-    const tmpDir = os.tmpdir();
-    const tmpId = randomUUID();
-    const outPath = path.join(fs.realpathSync(tmpDir), `${tmpId}.%(ext)s`);
-
-    try {
-      const free = getFreeDiskBytes(tmpDir);
-      if (MIN_FREE_DISK_BYTES > 0 && free > -1 && free < MIN_FREE_DISK_BYTES) {
-        return res.status(507).json({ error: 'INSUFFICIENT_STORAGE' });
-      }
-    } catch {}
-
-    const hist = appendHistory({ title, url: sourceUrl, type: 'video', format: String(mergeOut).toUpperCase(), status: 'queued' });
-  const job: Job = { id: hist.id, type: 'video', tmpId, tmpDir, userId: requestUser.id, concurrencyCap: policyAtQueue.concurrentJobs, version: 1 };
-    jobs.set(hist.id, job);
-    emitProgress(hist.id, { progress: 0, stage: 'queued' });
-
-    const run = () => {
-      log.info('job_spawn_convert', `url=${sourceUrl} container=${mergeOut} user=${requestUser.id}`);
-      const policy = policyAtQueue;
-      const child = (ytdlp as any).exec(
-        sourceUrl,
-        {
-          format: selectVideoFormat(policy),
-          output: outPath,
-          addHeader: makeHeaders(sourceUrl),
-          restrictFilenames: true,
-          noCheckCertificates: true,
-          noWarnings: true,
-          newline: true,
-          proxy: PROXY_URL,
-          limitRate: chosenLimitRateK(policy.speedLimitKbps),
-          ...(cfg.maxFileSizeMb ? { maxFilesize: `${cfg.maxFileSizeMb}M` } : {}),
-          ...(cfg.maxDurationSec ? { matchFilter: `duration <= ${cfg.maxDurationSec}` } : {}),
-          ...ytDlpArgsFromPolicy(policy),
-          ...speedyDlArgs(),
-        }
-      );
-      job.child = child as any;
-      trapChildPromise(child, 'yt_dlp_unhandled_job_convert');
-
-      const onProgress = (buf: Buffer) => {
-        const text = buf.toString();
-        const { pct, speed, eta } = parseDlLine(text);
-        if (typeof pct === 'number') {
-          updateHistoryThrottled(hist.id, pct);
-          emitProgress(hist.id, { progress: pct, stage: 'downloading', speed, eta });
-        }
-        if (hasProgressHint(text, ['merging formats', 'merging'])) {
-          emitProgress(hist.id, { progress: 95, stage: 'merging', speed, eta });
-        }
-      };
-      child.stdout?.on('data', onProgress);
-      child.stderr?.on('data', onProgress);
-      child.on('error', (err: any) => { try { log.error('yt_dlp_error_convert', err?.message || String(err)); } catch {} });
-      child.on('close', (code: number) => {
-        try { log.info('yt_dlp_close_convert', `code=${code}`); } catch {}
-        running.delete(hist.id);
-        let succeeded = false;
-        try {
-          const cur = readHistory().find((x) => x.id === hist.id);
-          if (cur?.status === 'canceled') { schedule(); return; }
-          if (code === 0) {
-            const produced = findProducedFile(tmpDir, tmpId, ['.mp4', '.mkv', '.webm']);
-            if (produced) {
-              job.produced = produced;
-              const full = path.join(tmpDir, produced);
-              const stat = fs.statSync(full);
-              updateHistory(hist.id, { status: 'completed', progress: 100, size: `${Math.round(stat.size / 1024 / 1024)} MB` });
-              clearHistoryThrottle(hist.id);
-              emitProgress(hist.id, { progress: 100, stage: 'completed', size: stat.size });
-              finalizeJob(hist.id, 'completed', { job });
-              succeeded = true;
-            } else {
-              updateHistory(hist.id, { status: 'failed' });
-              clearHistoryThrottle(hist.id);
-            }
-          } else {
-            updateHistory(hist.id, { status: 'failed' });
-            clearHistoryThrottle(hist.id);
-          }
-        } catch {}
-        if (!succeeded) {
-          finalizeJob(hist.id, 'failed', { job, keepJob: false, keepFiles: false });
-        }
-        schedule();
-      });
-    };
-
-    waiting.push({ job, run });
-    schedule();
-    return res.json({ id: hist.id });
-  } catch (err: any) {
-    log.error('job_start_convert_failed', err?.message || err);
-    return res.status(500).json({ error: 'job_start_failed' });
-  }
-});
+setupLogRoutes(app, requireAuth);
 
 // ========================
 // Batches
@@ -1942,6 +969,15 @@ app.post('/api/batch', batchRateLimit, requireAuth as any, async (req: any, res)
       const tmpDir = os.tmpdir();
       const tmpId = randomUUID();
       const outPath = path.join(fs.realpathSync(tmpDir), `${tmpId}.%(ext)s`);
+
+      // Disk space check before enqueuing job
+      try {
+        assertFreeSpace(tmpDir, MIN_FREE_DISK_BYTES);
+      } catch (err: any) {
+        log.warn('batch_insufficient_storage', `Skipping ${u} - ${err?.message || 'disk space low'}`);
+        continue; // Skip this URL, continue with rest
+      }
+
     const hist = appendHistory({ title, url: u, type: mode, format: mode === 'audio' ? String(audioFmt).toUpperCase() : 'MP4', status: 'queued' });
   const job: Job = { id: hist.id, type: mode, tmpId, tmpDir, userId: requestUser.id, concurrencyCap: policy.concurrentJobs, version: 1 };
       jobs.set(hist.id, job);
@@ -1988,6 +1024,7 @@ app.post('/api/batch', batchRateLimit, requireAuth as any, async (req: any, res)
     job.child = child as any;
     trapChildPromise(child, mode === 'audio' ? 'yt_dlp_unhandled_batch_audio' : 'yt_dlp_unhandled_batch_video');
 
+    let stderrBuf = '';
     const onProgress = (buf: Buffer) => {
           const text = buf.toString();
           const { pct, speed, eta } = parseDlLine(text);
@@ -1999,8 +1036,12 @@ app.post('/api/batch', batchRateLimit, requireAuth as any, async (req: any, res)
             emitProgress(hist.id, { stage: mode === 'audio' ? 'converting' : 'processing', batchId });
           }
         };
+        const onStderr = (buf: Buffer) => {
+          stderrBuf += buf.toString();
+          onProgress(buf);
+        };
         child.stdout?.on('data', onProgress);
-        child.stderr?.on('data', onProgress);
+        child.stderr?.on('data', onStderr);
 
         child.on('close', (code: number) => {
           running.delete(hist.id);
@@ -2025,7 +1066,14 @@ app.post('/api/batch', batchRateLimit, requireAuth as any, async (req: any, res)
             }
           } catch {}
           if (!succeeded) {
-            finalizeJob(hist.id, 'failed', { job, keepJob: false, keepFiles: false, extra: { batchId } });
+            // Normalize yt-dlp error for better UX
+            const normalized = normalizeYtError(stderrBuf);
+            finalizeJob(hist.id, 'failed', { 
+              job, 
+              keepJob: false, 
+              keepFiles: false, 
+              extra: { batchId, errorCode: normalized.code, errorMessage: normalized.message } 
+            });
           }
           schedule();
         });
@@ -2066,7 +1114,7 @@ app.post('/api/batch/:id/cancel', requireAuth as any, (req: any, res) => {
       finalizeJob(it.jobId, 'canceled', { job, keepJob: false, keepFiles: false, extra: { batchId: b.id } });
       continue;
     }
-    try { job.child?.kill('SIGTERM'); } catch {}
+    safeKill(job.child);
     updateHistory(it.jobId, { status: 'canceled' });
     emitProgress(it.jobId, { stage: 'canceled', batchId: b.id });
     finalizeJob(it.jobId, 'canceled', { job, keepJob: false, keepFiles: false, extra: { batchId: b.id } });
@@ -2076,144 +1124,11 @@ app.post('/api/batch/:id/cancel', requireAuth as any, (req: any, res) => {
 });
 
 // ========================
-// SSE progress (per history id)
+// SSE endpoint handled by routes/sse.ts
 // ========================
-app.get('/api/progress/:id', requireAuthOrSigned('progress'), progressBucket, (req: any, res) => {
-  const id = req.params.id;
-  res.setHeader('Content-Type', 'text/event-stream');
-  res.setHeader('Cache-Control', 'no-store');
-  res.setHeader('X-Accel-Buffering', 'no');
-  res.setHeader('Connection', 'keep-alive');
-  appendVary(res, 'Authorization');
-  (res as any).flushHeaders?.();
-
-  res.write(`retry: 5000\n`);
-
-  addSseListener(id, res);
-
-  let closed = false;
-  let hb: NodeJS.Timeout | undefined;
-  let timeout: NodeJS.Timeout | undefined;
-
-  const cleanup = () => {
-    if (closed) return;
-    closed = true;
-    if (hb) {
-      clearInterval(hb);
-      hb = undefined;
-    }
-    if (timeout) {
-      clearTimeout(timeout);
-      timeout = undefined;
-    }
-    removeSseListener(id, res);
-    try { res.end(); } catch {}
-  };
-
-  const safeWrite = (chunk: string) => {
-    if (closed || res.writableEnded || (res as any).destroyed) return;
-    try { res.write(chunk); } catch { cleanup(); }
-  };
-
-  // Activity-based timeout reset: 1 hour instead of 10 minutes
-  const arm = () => {
-    if (timeout) clearTimeout(timeout);
-    timeout = setTimeout(() => {
-      pushSse(id, { id, status: 'timeout' }, 'end');
-      cleanup();
-    }, 60 * 60 * 1000); // 1 hour
-  };
-
-  const lastEventHeader = req.header('Last-Event-ID');
-  const lastEventId = lastEventHeader && !Number.isNaN(Number(lastEventHeader)) ? Number(lastEventHeader) : undefined;
-  if (typeof lastEventId === 'number') {
-    const buf = sseBuffers.get(id) || [];
-    for (const frame of buf) {
-      const match = frame.match(/^id:\s*(\d+)/m);
-      const frameId = match ? Number(match[1]) : undefined;
-      if (typeof frameId === 'number' && frameId > lastEventId) {
-        safeWrite(frame);
-      }
-    }
-  }
-
-  const onErr = (err: any) => {
-    const msg = String(err?.message || err || '');
-    if (!/aborted|socket hang up|ECONNRESET|ERR_STREAM_PREMATURE_CLOSE/i.test(msg)) {
-      try { log.warn('progress_sse_stream_error', msg); } catch {}
-    }
-    cleanup();
-  };
-
-  req.on('close', cleanup);
-  req.on('aborted', cleanup);
-  req.on('error', onErr);
-  res.on('error', onErr);
-  (req.socket as any)?.on?.('error', onErr);
-  (req.socket as any)?.on?.('close', cleanup);
-
-  safeWrite(`event: ping\ndata: {"ok":true}\n\n`);
-  arm(); // Set initial timeout
-  hb = setInterval(() => {
-    safeWrite(`event: ping\ndata: {"ts":${Date.now()}}\n\n`);
-    arm(); // Reset timeout on each heartbeat (activity-based)
-  }, 15000);
-});
 
 // ========================
-// Job cancel / all-cancel
-// ========================
-app.post('/api/job/cancel/:id', requireAuth as any, (req, res) => {
-  const id = req.params.id;
-  const job = jobs.get(id);
-  if (!job) return res.status(404).json({ error: 'not_found' });
-
-  const idx = waiting.findIndex(w => w.job.id === id);
-  if (idx >= 0) {
-    waiting.splice(idx, 1);
-    updateHistory(id, { status: 'canceled' });
-    emitProgress(id, { stage: 'canceled' });
-    finalizeJob(id, 'canceled', { job, keepJob: false, keepFiles: false });
-    return res.json({ ok: true });
-  }
-
-  try {
-    job.child?.kill('SIGTERM');
-    const pid = job.child?.pid;
-    if (pid && !job.child?.killed) setTimeout(() => { try { process.kill(pid, 'SIGKILL'); } catch {} }, 5000);
-    updateHistory(id, { status: 'canceled' });
-    emitProgress(id, { stage: 'canceled' });
-    finalizeJob(id, 'canceled', { job, keepJob: false, keepFiles: false });
-  } catch {}
-  return res.json({ ok: true });
-});
-
-app.post('/api/jobs/cancel-all', requireAuth as any, (_req, res) => {
-  // queued
-  while (waiting.length) {
-    const next = waiting.shift()!;
-    const id = next.job.id;
-    updateHistory(id, { status: 'canceled' });
-    emitProgress(id, { stage: 'canceled' });
-    finalizeJob(id, 'canceled', { job: next.job, keepJob: false, keepFiles: false });
-  }
-  // running
-  for (const id of Array.from(running)) {
-    const job = jobs.get(id);
-    try { job?.child?.kill('SIGTERM'); } catch {}
-    try {
-      const pid = job?.child?.pid;
-      if (pid && !job?.child?.killed) setTimeout(() => { try { process.kill(pid, 'SIGKILL'); } catch {} }, 5000);
-    } catch {}
-    updateHistory(id, { status: 'canceled' });
-    emitProgress(id, { stage: 'canceled' });
-    finalizeJob(id, 'canceled', { job: job, keepJob: false, keepFiles: false });
-  }
-  res.json({ ok: true });
-});
-
-// ========================
-// Job file download (range + cleanup)
+// Job file download signed URLs (kept in index.ts for middleware dependencies)
 // ========================
 app.post('/api/job/file/:id/sign', requireAuth as any, signBucket, (req, res) => {
   const id = req.params.id;
@@ -2228,7 +1143,7 @@ app.post('/api/job/file/:id/sign', requireAuth as any, signBucket, (req, res) =>
   const token = signToken({ sub: `job:${id}`, scope, ver: job.version }, ttl);
   signIssued.inc({ scope });
   signTtl.observe(ttl);
-  res.setHeader('Cache-Control', 'no-store');
+  setNoStore(res);
   return res.json({ token, expiresAt: Date.now() + ttl * 1000, queryParam: 's' });
 });
 
@@ -2245,7 +1160,7 @@ app.post('/api/progress/:id/sign', requireAuth as any, signBucket, (req, res) =>
   const token = signToken({ sub: `job:${id}`, scope, ver: job.version }, ttl);
   signIssued.inc({ scope });
   signTtl.observe(ttl);
-  res.setHeader('Cache-Control', 'no-store');
+  setNoStore(res);
   return res.json({ token, expiresAt: Date.now() + ttl * 1000, queryParam: 's' });
 });
 
@@ -2279,9 +1194,7 @@ app.get('/api/job/file/:id', requireAuthOrSigned('download'), jobBucket, (req: a
     const h = readHistory().find((x) => x.id === id);
     const base = (h?.title || (job.type === 'audio' ? 'audio' : 'video')).replace(/[^\w.-]+/g, '_');
     const extName = path.extname(full).replace(/^\./, '') || (job.type === 'audio' ? 'm4a' : 'mp4');
-    res.setHeader('Content-Disposition', `attachment; filename="${base}.${extName}"`);
-    res.setHeader('Cache-Control', 'no-store');
-    res.setHeader('Accept-Ranges', 'bytes');
+    setDownloadHeaders(res, `${base}.${extName}`, undefined, etag);
 
     const ifNoneMatch = req.headers['if-none-match'];
     if (ifNoneMatch) {
@@ -2295,37 +1208,65 @@ app.get('/api/job/file/:id', requireAuthOrSigned('download'), jobBucket, (req: a
 
     const range = req.headers.range;
     if (range) {
-      const m = String(range).match(/bytes=(\d+)-(\d+)?/);
-      if (m) {
-        const start = parseInt(m[1], 10);
-        const end = m[2] ? parseInt(m[2], 10) : (stat.size - 1);
-        if (Number.isFinite(start) && start >= 0 && start < stat.size && end >= start) {
-          res.status(206);
-          res.setHeader('Content-Range', `bytes ${start}-${end}/${stat.size}`);
-          res.setHeader('Content-Length', String(end - start + 1));
-          appendVary(res, 'Range');
-          const stream = fs.createReadStream(full, { start, end });
-          const isFull = (start === 0 && end === stat.size - 1);
-          const ender = () => { try { stream.destroy(); } catch {} };
-          res.on('close', ender); res.on('aborted', ender);
-          stream.pipe(res);
-          // Finalize job only if complete file was delivered (0..size-1)
-          stream.on('close', () => {
-            if (isFull) {
-              try { fs.unlinkSync(full); } catch {}
-              finalizeJob(id, 'completed', { job, keepJob: false, keepFiles: false });
-            }
-          });
-          return;
+      const rangeStr = String(range);
+      
+      // Parse standard range (bytes=start-end) or suffix range (bytes=-N)
+      let start: number, end: number;
+      const suffixMatch = rangeStr.match(/bytes=-(\d+)$/);
+      const standardMatch = rangeStr.match(/bytes=(\d+)-(\d+)?$/);
+      
+      if (suffixMatch) {
+        // Suffix range: bytes=-N → last N bytes
+        const suffix = parseInt(suffixMatch[1], 10);
+        if (suffix <= 0 || !Number.isFinite(suffix)) {
+          res.status(416);
+          res.setHeader('Content-Range', `bytes */${stat.size}`);
+          return res.end();
         }
+        start = Math.max(0, stat.size - suffix);
+        end = stat.size - 1;
+      } else if (standardMatch) {
+        // Standard range: bytes=start-end
+        start = parseInt(standardMatch[1], 10);
+        end = standardMatch[2] ? parseInt(standardMatch[2], 10) : (stat.size - 1);
+      } else {
+        // Invalid range syntax
+        res.status(416);
+        res.setHeader('Content-Range', `bytes */${stat.size}`);
+        return res.end();
       }
-
-      res.status(416);
-      res.setHeader('Content-Range', `bytes */${stat.size}`);
-      return res.end();
+      
+      // Validate range bounds
+      if (!Number.isFinite(start) || !Number.isFinite(end) || start < 0 || end < start || start >= stat.size) {
+        res.status(416);
+        res.setHeader('Content-Range', `bytes */${stat.size}`);
+        return res.end();
+      }
+      
+      // Clamp end to file size
+      end = Math.min(end, stat.size - 1);
+      
+      res.status(206);
+      res.setHeader('Content-Range', `bytes ${start}-${end}/${stat.size}`);
+      res.setHeader('Content-Length', String(end - start + 1));
+      appendVary(res, 'Range');
+      const stream = fs.createReadStream(full, { start, end });
+      const isFull = (start === 0 && end === stat.size - 1);
+      const ender = () => { try { stream.destroy(); } catch {} };
+      res.on('close', ender); res.on('aborted', ender);
+      stream.pipe(res);
+      // Finalize job only if complete file was delivered (0..size-1)
+      stream.on('close', () => {
+        if (isFull) {
+          try { fs.unlinkSync(full); } catch {}
+          finalizeJob(id, 'completed', { job, keepJob: false, keepFiles: false });
+        }
+      });
+      return;
     }
 
     res.setHeader('Content-Length', String(stat.size));
+    appendVary(res, 'Range'); // Prevent CDN from caching 200 and returning it for Range requests
     if (req.method === 'HEAD') return res.end();
 
     const stream = fs.createReadStream(full);
@@ -2348,7 +1289,7 @@ app.get('/api/job/file/:id', requireAuthOrSigned('download'), jobBucket, (req: a
 // ========================
 app.get('/api/subtitles/download', requireAuth as any, async (req: any, res) => {
   // FFmpeg-free mode: subtitles feature disabled
-  if (process.env.ENABLE_FFMPEG === 'false') {
+  if (!ffmpegEnabled()) {
     return res.status(501).json({ 
       error: 'feature_disabled', 
       message: 'Subtitle extraction requires FFmpeg which is disabled in this deployment' 
@@ -2380,19 +1321,9 @@ app.get('/api/subtitles/download', requireAuth as any, async (req: any, res) => 
       return (Readable as any).fromWeb(upstream.body as any).pipe(res);
     }
 
-    // FFmpeg subtitle conversion removed - this code path should never execute
-    // due to early return above when ENABLE_FFMPEG=false
+    // FFmpeg subtitle conversion not implemented in FFmpeg-free mode
+    // If we reach here, it means the request requires FFmpeg processing
     return res.status(501).json({ error: 'ffmpeg_not_available' });
-
-    const stat = fs.statSync(outPath);
-    res.setHeader('Content-Type', outExt === 'srt' ? 'application/x-subrip; charset=utf-8' : 'text/vtt; charset=utf-8');
-    const safe = safeName(title || 'subtitles');
-    res.setHeader('Content-Disposition', `attachment; filename="${safe}.${outExt}"`);
-    res.setHeader('Content-Length', String(stat.size));
-    if (req.method === 'HEAD') { try { fs.unlinkSync(outPath); } catch {}; return res.end(); }
-    const stream = fs.createReadStream(outPath);
-    stream.pipe(res);
-    stream.on('close', () => { try { fs.unlinkSync(outPath); } catch {} });
   } catch (err: any) {
     log.error('subtitles_download_failed', err?.message || err);
     res.status(500).json({ error: 'subtitles_failed' });
@@ -2424,20 +1355,31 @@ app.get('/api/metrics', requireAuth as any, (_req, res) => {
 // Orphan reaper
 // ========================
 const REAPER_MS = 10 * 60 * 1000; // 10m
+const BATCH_TTL_MS = 24 * 60 * 60 * 1000; // 24h - finished batches older than this will be deleted
+
 if (process.env.NODE_ENV !== 'test') {
   setInterval(() => {
     try {
       metrics.reaper.lastRunTimestamp = Math.floor(Date.now() / 1000);
+      const now = Date.now();
+      let reaperRaces = 0;
+
+      // Clean up old job files
       for (const job of jobs.values()) {
         if (!job.produced) continue;
         const full = path.join(job.tmpDir, job.produced);
         if (fs.existsSync(full)) {
-          const age = Date.now() - fs.statSync(full).mtimeMs;
+          const stat = fs.statSync(full);
+          const age = now - stat.mtimeMs;
           if (age > REAPER_MS) {
             try { 
               fs.unlinkSync(full); 
               metrics.reaper.filesReaped += 1;
-            } catch {}
+            } catch (err) {
+              // Could be race with finalize - file already deleted
+              reaperRaces++;
+              log.debug('reaper_file_race', { jobId: job.id, file: job.produced });
+            }
             try { 
               jobs.delete(job.id); 
               metrics.reaper.jobsDeleted += 1;
@@ -2450,7 +1392,29 @@ if (process.env.NODE_ENV !== 'test') {
           } catch {}
         }
       }
-    } catch {}
+
+      // Clean up finished batches older than TTL (prevents memory leak)
+      let batchesReaped = 0;
+      for (const [id, batch] of batches) {
+        if (batch.finishedAt && (now - batch.finishedAt) > BATCH_TTL_MS) {
+          try { 
+            batches.delete(id);
+            batchesReaped++;
+            log.debug('batch_reaped', { id, age: Math.floor((now - batch.finishedAt) / 60000) + 'min' });
+          } catch {}
+        }
+      }
+
+      if (reaperRaces > 0) {
+        metrics.reaper.reaperFinalizeRace += reaperRaces;
+        log.debug('reaper_races_detected', { count: reaperRaces });
+      }
+      if (batchesReaped > 0) {
+        log.info('reaper_batches_cleaned', { count: batchesReaped });
+      }
+    } catch (err) {
+      log.error('reaper_error', { error: String(err) });
+    }
   }, REAPER_MS);
 }
 

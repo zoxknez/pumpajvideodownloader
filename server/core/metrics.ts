@@ -21,6 +21,7 @@ export type ReaperMetrics = {
   filesReaped: number;
   jobsDeleted: number;
   lastRunTimestamp: number;
+  reaperFinalizeRace: number; // Race condition between reaper and finalizeJob
 };
 
 export type MetricsRegistry = {
@@ -66,6 +67,7 @@ export function createMetricsRegistry(): MetricsRegistry {
       filesReaped: 0,
       jobsDeleted: 0,
       lastRunTimestamp: 0,
+      reaperFinalizeRace: 0,
     },
   };
 }

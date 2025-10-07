@@ -12,7 +12,7 @@ import { spawnSync } from 'node:child_process';
 import { getLogger } from './core/logger.js';
 import { loadConfig } from './core/config.js';
 import { isUrlAllowed } from './core/urlAllow.js';
-import { buildCorsOrigin, isOriginAllowed } from './core/corsOrigin.js';
+import { isOriginAllowed } from './core/corsOrigin.js';
 import { appendHistory, readHistory, updateHistory, removeHistory, clearHistory } from './core/history.js';
 import { readServerSettings, writeServerSettings } from './core/settings.js';
 import { requestLogger } from './middleware/requestLog.js';
@@ -38,9 +38,19 @@ import { metricsMiddleware, signIssued, signTtl } from './middleware/httpMetrics
 import { signToken } from './core/signed.js';
 import { traceContext } from './middleware/trace.js';
 import { analyzeRateLimit, batchRateLimit } from './middleware/rateLimit.js';
+import { SseHub } from './core/SseHub.js';
+import { JobManager } from './core/JobManager.js';
+import { Downloader } from './core/Downloader.js';
+import { ffmpegEnabled } from './core/env.js';
+import { setNoStore, setSseHeaders, setDownloadHeaders, safeKill, appendVary } from './core/http.js';
+import { makeHeaders, coerceAudioFormat, selectVideoFormat, selectAudioFormat, parseDlLine, hasProgressHint, chosenLimitRateK, findProducedFile, trunc, safeName, getFreeDiskBytes, formatDuration, speedyDlArgs, trapChildPromise, cleanedChildEnv as cleanedChildEnvHelper, DEFAULT_AUDIO_FORMAT, } from './core/ytHelpers.js';
+import { setupDownloadRoutes } from './routes/downloads.js';
 // ---- App init / middleware ----
 const log = getLogger('server');
 const cfg = loadConfig();
+// NOTE: noCheckCertificates is currently hard-coded to true in all yt-dlp calls.
+// If you make this configurable via env var in future, add warning log here:
+// if (process.env.NO_CHECK_CERTS === '1') { log.warn('insecure_tls_enabled', 'TLS verification disabled'); }
 export const metrics = createMetricsRegistry();
 const proxyDownload = createProxyDownloadHandler(cfg, metrics);
 const MIN_FREE_DISK_BYTES = typeof cfg.minFreeDiskMb === 'number' && cfg.minFreeDiskMb > 0
@@ -70,11 +80,45 @@ app.use(limiter);
 // Manual CORS implementation - cors package was not deploying correctly to Railway
 app.use((req, res, next) => {
     const origin = req.headers.origin;
-    // Check if origin is allowed
-    if (origin && isOriginAllowed(origin, process.env.CORS_ORIGIN)) {
-        res.setHeader('Access-Control-Allow-Origin', origin);
+    const corsOriginEnv = process.env.CORS_ORIGIN;
+    // Log CORS check for debugging (only on first request or OPTIONS)
+    if (req.method === 'OPTIONS' || !res.locals.corsLogged) {
+        log.debug(`CORS check: origin=${origin}, allowed=${corsOriginEnv || 'ALL'}`);
+        res.locals.corsLogged = true;
     }
-    res.setHeader('Access-Control-Allow-Credentials', 'true');
+    // Check if origin is allowed
+    const isAllowed = isOriginAllowed(origin, corsOriginEnv);
+    if (origin && isAllowed) {
+        res.setHeader('Access-Control-Allow-Origin', origin);
+        res.setHeader('Access-Control-Allow-Credentials', 'true');
+        if (req.method === 'OPTIONS') {
+            log.debug(`CORS: ✅ Allowed origin ${origin}`);
+        }
+    }
+    else if (!corsOriginEnv) {
+        // Development mode - no CORS_ORIGIN set, allow all
+        // CRITICAL: Only set credentials if we echo a concrete origin, NOT with wildcard
+        if (origin) {
+            res.setHeader('Access-Control-Allow-Origin', origin);
+            res.setHeader('Access-Control-Allow-Credentials', 'true');
+        }
+        else {
+            res.setHeader('Access-Control-Allow-Origin', '*');
+            // Do NOT set Access-Control-Allow-Credentials with wildcard (spec violation)
+        }
+        if (req.method === 'OPTIONS') {
+            log.debug(`CORS: ✅ Dev mode - allowing all origins`);
+        }
+    }
+    else if (origin) {
+        // Origin not allowed - log detailed comparison
+        const allowedList = (corsOriginEnv || '').split(',').map(s => s.trim()).filter(Boolean);
+        log.warn(`CORS: ❌ Rejected origin "${origin}"`);
+        log.warn(`CORS: Allowed origins: [${allowedList.map(o => `"${o}"`).join(', ')}]`);
+        log.warn(`CORS: Origin length: ${origin.length}, first allowed length: ${allowedList[0]?.length || 0}`);
+        log.warn(`CORS: Exact match check: "${origin}" === "${allowedList[0]}" → ${origin === allowedList[0]}`);
+    }
+    // Always set these headers regardless of origin
     res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS,HEAD');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type,Authorization,Accept,X-Requested-With,Range,If-Range,If-None-Match,If-Modified-Since,X-Req-Id,x-req-id,X-Request-Id,X-Client-Trace,Traceparent,traceparent,X-Traceparent');
     res.setHeader('Access-Control-Expose-Headers', 'Content-Disposition,Content-Length,Content-Type,ETag,Last-Modified,Accept-Ranges,Content-Range,X-Request-Id,Proxy-Status,Retry-After,X-Traceparent');
@@ -114,17 +158,26 @@ mountPromMetrics(app, metrics);
 app.use('/api/proxy-download', metricsMiddleware('proxy-download'));
 app.use('/api/job/file/:id', metricsMiddleware('job-file'));
 app.use('/api/progress/:id', metricsMiddleware('progress'));
+// ========================
+// Refactored: SSE + Job Management
+// ========================
+const sseHub = new SseHub(log, 20);
+const jobManager = new JobManager(log, sseHub, 2);
+const downloader = new Downloader(log);
 function bumpJobVersion(job) {
     if (!job)
         return;
     const current = Number.isFinite(job.version) ? job.version : 0;
     job.version = Math.max(1, current + 1);
 }
+// Legacy Maps - gradually migrate to JobManager
 const jobs = new Map();
 const waiting = [];
 const running = new Set(); // jobIds
+// Legacy SSE - gradually migrate to SseHub
 const sseListeners = new Map();
 const sseBuffers = new Map();
+const sseEventCounters = new Map(); // Monotonic event ID per channel
 const SSE_BUFFER_SIZE = 20;
 Object.assign(app.locals, {
     jobs,
@@ -134,6 +187,9 @@ Object.assign(app.locals, {
     sseBuffers,
     minFreeDiskBytes: MIN_FREE_DISK_BYTES,
     metrics,
+    sseHub,
+    jobManager,
+    downloader,
 });
 let MAX_CONCURRENT = 2;
 let PROXY_URL;
@@ -153,218 +209,8 @@ try {
 }
 catch { }
 // ========================
-// Pomoćne funkcije
-// ========================
-const trunc = (s, n = 100) => (s.length > n ? s.slice(0, n) : s);
-const safeName = (input, max = 100) => trunc((input || '').replace(/[\n\r"\\]/g, '').replace(/[^\w.-]+/g, '_'), max);
-function hasProgressHint(text, needles) {
-    if (!text)
-        return false;
-    const lower = text.toLowerCase();
-    return needles.some((needle) => lower.includes(needle));
-}
-function appendVary(res, value) {
-    const existing = res.getHeader('Vary');
-    if (!existing) {
-        res.setHeader('Vary', value);
-        return;
-    }
-    const parts = String(existing)
-        .split(',')
-        .map((part) => part.trim())
-        .filter(Boolean);
-    if (!parts.includes(value))
-        parts.push(value);
-    res.setHeader('Vary', parts.join(', '));
-}
-function parseDfFreeBytes(output) {
-    const lines = String(output || '').trim().split(/\r?\n/);
-    for (let i = lines.length - 1; i >= 0; i -= 1) {
-        const parts = lines[i]?.trim().split(/\s+/) ?? [];
-        if (parts.length >= 4) {
-            const availKb = Number(parts[3]);
-            if (Number.isFinite(availKb))
-                return availKb * 1024;
-        }
-    }
-    return -1;
-}
-function parseWmicFreeBytes(output, drive) {
-    const normalizedDrive = drive.replace(/\\$/, '');
-    const lines = String(output || '').trim().split(/\r?\n/).slice(1);
-    for (const line of lines) {
-        if (!line || !line.includes(normalizedDrive))
-            continue;
-        const parts = line.trim().split(/\s+/);
-        if (parts.length >= 2) {
-            const free = Number(parts[1]);
-            if (Number.isFinite(free))
-                return free;
-        }
-    }
-    return -1;
-}
-// df / wmic: best-effort slobodan prostor (bytes ili -1)
-function getFreeDiskBytes(dir) {
-    try {
-        if (process.platform !== 'win32') {
-            const out = spawnSync('df', ['-k', dir], { encoding: 'utf8' });
-            if (out.status === 0) {
-                const parsed = parseDfFreeBytes(String(out.stdout || ''));
-                if (parsed >= 0)
-                    return parsed;
-            }
-        }
-        else {
-            const out = spawnSync('wmic', ['logicaldisk', 'get', 'size,freespace,caption'], { encoding: 'utf8' });
-            if (out.status === 0) {
-                const drive = path.parse(path.resolve(dir)).root;
-                const parsed = parseWmicFreeBytes(String(out.stdout || ''), drive);
-                if (parsed >= 0)
-                    return parsed;
-            }
-        }
-    }
-    catch { }
-    return -1;
-}
-function formatDuration(seconds) {
-    const s = Math.max(0, Math.floor(seconds));
-    const days = Math.floor(s / 86400);
-    const hours = Math.floor((s % 86400) / 3600);
-    const minutes = Math.floor((s % 3600) / 60);
-    const secs = s % 60;
-    const parts = [];
-    if (days)
-        parts.push(`${days}d`);
-    if (hours || parts.length)
-        parts.push(`${hours}h`);
-    parts.push(`${minutes}m`);
-    if (!parts.length || (!days && !hours))
-        parts.push(`${secs}s`);
-    return parts.join(' ');
-}
-function speedyDlArgs() {
-    return {
-        concurrentFragments: 10,
-        httpChunkSize: '10M',
-        socketTimeout: 20,
-        retries: 10,
-        fragmentRetries: 10,
-    };
-}
-function makeHeaders(u) {
-    try {
-        const h = new URL(u).hostname.toLowerCase();
-        if (h.includes('youtube.com') || h.includes('youtu.be')) {
-            return ['referer: https://www.youtube.com', 'user-agent: Mozilla/5.0'];
-        }
-        if (h.includes('x.com') || h.includes('twitter.com')) {
-            return ['referer: https://x.com', 'user-agent: Mozilla/5.0'];
-        }
-        if (h.includes('instagram.com')) {
-            return ['referer: https://www.instagram.com', 'user-agent: Mozilla/5.0'];
-        }
-        if (h.includes('facebook.com') || h.includes('fbcdn.net')) {
-            return ['referer: https://www.facebook.com', 'user-agent: Mozilla/5.0'];
-        }
-    }
-    catch { }
-    return ['user-agent: Mozilla/5.0'];
-}
-const AUDIO_FORMAT_ALIASES = new Map([
-    ['m4a', 'm4a'],
-    ['m4b', 'm4a'],
-    ['mp4a', 'm4a'],
-    ['aac', 'aac'],
-    ['mp3', 'mp3'],
-    ['mpeg', 'mp3'],
-    ['mpga', 'mp3'],
-    ['opus', 'opus'],
-    ['vorbis', 'vorbis'],
-    ['ogg', 'vorbis'],
-    ['oga', 'vorbis'],
-    ['flac', 'flac'],
-    ['wav', 'wav'],
-    ['alac', 'alac'],
-]);
-const DEFAULT_AUDIO_FORMAT = 'm4a';
-function coerceAudioFormat(input, fallback = DEFAULT_AUDIO_FORMAT) {
-    const raw = typeof input === 'string' ? input : input == null ? '' : String(input);
-    const trimmed = raw.trim().toLowerCase();
-    if (!trimmed)
-        return fallback;
-    if (trimmed === 'best')
-        return fallback;
-    return AUDIO_FORMAT_ALIASES.get(trimmed) ?? null;
-}
-/**
- * Returns video format selector based on FFmpeg availability and policy.
- * FFmpeg-free mode: progressive streams only (typically up to 720p on YouTube).
- * FFmpeg mode: adaptive merge (best video + best audio).
- */
-function selectVideoFormat(policy) {
-    const ffmpegEnabled = process.env.ENABLE_FFMPEG !== 'false';
-    if (ffmpegEnabled) {
-        // Adaptive streams: merge best video + audio (requires FFmpeg)
-        return `bv*[height<=?${policy.maxHeight}]+ba/b[height<=?${policy.maxHeight}]`;
-    }
-    else {
-        // Progressive streams only: pre-muxed video+audio container
-        // Fallback chain: exact height match → any progressive with both codecs → best available
-        return `b[height<=?${policy.maxHeight}][vcodec!=none][acodec!=none]/b[acodec!=none][vcodec!=none]/best[height<=?${policy.maxHeight}]`;
-    }
-}
-/**
- * Returns audio format options based on FFmpeg availability.
- * FFmpeg-free mode: direct stream (bestaudio[ext=m4a]/bestaudio/best).
- * FFmpeg mode: extract and convert to target format.
- */
-function selectAudioFormat(targetFormat) {
-    const ffmpegEnabled = process.env.ENABLE_FFMPEG !== 'false';
-    if (ffmpegEnabled) {
-        // Extract and convert audio (requires FFmpeg)
-        return { extractAudio: true, audioFormat: targetFormat };
-    }
-    else {
-        // Direct audio stream, prefer m4a container
-        return { format: 'bestaudio[ext=m4a]/bestaudio/best' };
-    }
-}
-function trapChildPromise(child, label) {
-    if (child && typeof child.catch === 'function') {
-        child.catch((err) => {
-            try {
-                log.error(label, err?.message || err);
-            }
-            catch { }
-        });
-    }
-}
-// Unified: izvuče %/brzinu/ETA iz yt-dlp linije
-function parseDlLine(text) {
-    const pctMatch = text.match(/(\d{1,3}(?:\.\d+)?)%/);
-    const speedMatch = text.match(/\bat\s+([\d.,]+\s*(?:[KMG]?i?B)\/s)\b/i);
-    const etaMatch = text.match(/ETA\s+(\d{2}:\d{2}(?::\d{2})?)/i);
-    const out = {};
-    if (pctMatch)
-        out.pct = Math.max(0, Math.min(100, parseFloat(pctMatch[1])));
-    if (speedMatch)
-        out.speed = speedMatch[1].replace(/\s+/g, '');
-    if (etaMatch)
-        out.eta = etaMatch[1];
-    return out;
-}
-function chosenLimitRateK(policyLimitKbps) {
-    const gl = Number(LIMIT_RATE || 0);
-    const pl = Number(policyLimitKbps || 0);
-    const chosen = gl > 0 && pl > 0 ? Math.min(gl, pl) : gl > 0 ? gl : pl > 0 ? pl : 0;
-    return chosen > 0 ? `${chosen}K` : undefined;
-}
-function findProducedFile(tmpDir, tmpId, exts) {
-    const list = fs.readdirSync(tmpDir);
-    return list.find((f) => f.startsWith(tmpId + '.') && exts.some((e) => f.toLowerCase().endsWith(e)));
-}
+// Pomoćne funkcije sada importovane iz core/ytHelpers.ts
+// appendVary je iz core/http.ts
 // ========================
 // SSE listeners & ring buffer
 // ========================
@@ -382,7 +228,16 @@ function removeSseListener(id, res) {
         sseListeners.delete(id);
 }
 function pushSse(id, payload, event, explicitId) {
-    const eventId = explicitId ?? Date.now();
+    // Use monotonic counter per channel for stable event IDs (immune to clock jumps)
+    let eventId;
+    if (explicitId !== undefined) {
+        eventId = explicitId;
+    }
+    else {
+        const current = sseEventCounters.get(id) ?? 0;
+        eventId = current + 1;
+        sseEventCounters.set(id, eventId);
+    }
     const frame = `${event ? `event: ${event}\n` : ''}id: ${eventId}\n` + `data: ${JSON.stringify(payload)}\n\n`;
     let buf = sseBuffers.get(id);
     if (!buf) {
@@ -484,6 +339,11 @@ function finalizeJob(id, status, options = {}) {
                 catch { }
             }
         }
+        // Cleanup monotonic event counter
+        try {
+            sseEventCounters.delete(id);
+        }
+        catch { }
     }
     // Bump job version to invalidate all signed tokens (download/progress URLs)
     // This ensures that completed/failed/canceled jobs cannot be accessed with old tokens
@@ -515,8 +375,47 @@ function finalizeJob(id, status, options = {}) {
     }
     catch { }
 }
+/**
+ * Close all SSE connections and clean up buffers for a history/stream ID.
+ * Use this for non-job streaming endpoints (/api/download/best, /audio, etc.)
+ * where there's no Job object but SSE cleanup is still needed.
+ */
+function endSseFor(id, status = 'completed') {
+    try {
+        // Send final event
+        pushSse(id, { id, status }, 'end');
+        // Close all connected SSE responses
+        const set = sseListeners.get(id);
+        if (set) {
+            for (const res of Array.from(set)) {
+                try {
+                    res.end();
+                }
+                catch { }
+                try {
+                    set.delete(res);
+                }
+                catch { }
+            }
+            if (set.size === 0) {
+                try {
+                    sseListeners.delete(id);
+                }
+                catch { }
+            }
+        }
+        // Clean up ring buffer (CRITICAL for memory leak prevention)
+        sseBuffers.delete(id);
+        // Clean up throttle
+        clearHistoryThrottle(id);
+    }
+    catch (err) {
+        log.error('endSseFor_failed', { id, error: String(err) });
+    }
+}
 Object.assign(app.locals, {
     finalizeJob,
+    endSseFor,
     pushSse,
     emitProgress,
     minFreeDiskBytes: MIN_FREE_DISK_BYTES,
@@ -608,6 +507,21 @@ function summarizeBatch(b) {
 // ========================
 app.get('/health', (_req, res) => res.json({ ok: true }));
 app.get('/ready', (_req, res) => res.json({ ok: true }));
+// Internal stats endpoint (for development/monitoring)
+app.get('/api/stats', requireAuth, (_req, res) => {
+    res.json({
+        sse: sseHub.getStats(),
+        jobs: jobManager.getStats(),
+        queue: jobManager.getQueueInfo(),
+        legacy: {
+            jobs: jobs.size,
+            waiting: waiting.length,
+            running: running.size,
+            sseListeners: sseListeners.size,
+            sseBuffers: sseBuffers.size,
+        },
+    });
+});
 app.get('/', (_req, res) => {
     res.type('text/html').send(`<!doctype html>
 <html lang="en"><head>
@@ -646,8 +560,27 @@ ul{padding-left:1.2rem}li{margin-bottom:.75rem}a{color:#60a5fa;text-decoration:n
 mountAuthRoutes(app);
 app.post('/auth/activate', authActivate);
 // ========================
-// /api/version (diag)
+// /api/version (diag) - with caching
 // ========================
+let ytVersionCache = null;
+const YT_VERSION_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+function getYtDlpVersion() {
+    const now = Date.now();
+    if (ytVersionCache && (now - ytVersionCache.timestamp) < YT_VERSION_CACHE_TTL) {
+        return ytVersionCache.version;
+    }
+    let version = '';
+    try {
+        const out = spawnSync('yt-dlp', ['--version'], { encoding: 'utf8', timeout: 2000 });
+        if (out?.status === 0)
+            version = String(out.stdout || '').trim();
+    }
+    catch (err) {
+        log.warn('ytdlp_version_check_failed', { error: String(err) });
+    }
+    ytVersionCache = { version, timestamp: now };
+    return version;
+}
 app.get('/api/version', (_req, res) => {
     try {
         let pkg = {};
@@ -657,13 +590,7 @@ app.get('/api/version', (_req, res) => {
                 pkg = JSON.parse(fs.readFileSync(p, 'utf8'));
         }
         catch { }
-        let ytVersion = '';
-        try {
-            const out = spawnSync('yt-dlp', ['--version'], { encoding: 'utf8' });
-            if (out?.status === 0)
-                ytVersion = String(out.stdout || '').trim();
-        }
-        catch { }
+        const ytVersion = getYtDlpVersion();
         const freeBytes = getFreeDiskBytes(os.tmpdir());
         res.json({
             name: pkg?.name || 'yt-dlp-server',
@@ -789,10 +716,7 @@ app.delete('/api/history/:id', requireAuth, (req, res) => {
             const idx = waiting.findIndex((w) => w.job.id === id);
             if (idx >= 0)
                 waiting.splice(idx, 1);
-            try {
-                job.child?.kill('SIGTERM');
-            }
-            catch { }
+            safeKill(job.child);
             finalizeJob(id, 'canceled', { job, keepJob: false, keepFiles: false });
         }
         removeHistory(id);
@@ -816,6 +740,38 @@ app.delete('/api/history', requireAuth, (_req, res) => {
 // ========================
 app.get('/api/jobs/metrics', requireAuth, (_req, res) => {
     res.json({ running: running.size, queued: waiting.length, maxConcurrent: MAX_CONCURRENT });
+});
+// List all active jobs (running + queued) for current user
+app.get('/api/job/list', requireAuth, (req, res) => {
+    const userId = req.user?.id;
+    if (!userId)
+        return res.status(401).json({ error: 'Unauthorized' });
+    // Collect all jobs belonging to this user
+    const userJobs = [];
+    // Running jobs
+    for (const jobId of running) {
+        const job = jobs.get(jobId);
+        if (job && job.userId === userId) {
+            userJobs.push({
+                id: job.id,
+                type: job.type,
+                status: 'running',
+                tmpId: job.tmpId,
+            });
+        }
+    }
+    // Queued jobs
+    for (const waitingItem of waiting) {
+        if (waitingItem.job.userId === userId) {
+            userJobs.push({
+                id: waitingItem.job.id,
+                type: waitingItem.job.type,
+                status: 'queued',
+                tmpId: waitingItem.job.tmpId,
+            });
+        }
+    }
+    res.json({ jobs: userJobs });
 });
 app.get('/api/jobs/settings', requireAuth, (_req, res) => {
     res.json({ maxConcurrent: MAX_CONCURRENT, proxyUrl: PROXY_URL || '', limitRateKbps: LIMIT_RATE ?? 0 });
@@ -948,380 +904,9 @@ app.post('/api/get-url', requireAuth, async (req, res, next) => {
     }
 });
 // ========================
-// /api/download/best (stream)
+// Download Routes (Refactored to routes/downloads.ts)
 // ========================
-app.get('/api/download/best', requireAuth, async (req, res) => {
-    const sourceUrl = req.query.url || '';
-    const title = req.query.title || 'video';
-    if (!isUrlAllowed(sourceUrl, cfg))
-        return res.status(400).json({ error: 'invalid_url' });
-    try {
-        await assertPublicHttpHost(sourceUrl);
-    }
-    catch (e) {
-        return res.status(400).json({ ok: false, error: { code: e?.code || 'SSRF_FORBIDDEN', message: e?.message || 'Forbidden host' } });
-    }
-    const tmp = fs.realpathSync(os.tmpdir());
-    const id = randomUUID();
-    const outPath = path.join(tmp, `${id}.%(ext)s`);
-    let histId;
-    try {
-        const policy = policyFor(req.user?.plan);
-        log.info('download_best_start', sourceUrl);
-        const hist = appendHistory({ title, url: sourceUrl, type: 'video', format: 'MP4', status: 'in-progress' });
-        histId = hist.id;
-        emitProgress(hist.id, { progress: 0, stage: 'starting' });
-        let stream = null;
-        const child = ytdlp.exec(sourceUrl, {
-            format: selectVideoFormat(policy),
-            output: outPath,
-            addHeader: makeHeaders(sourceUrl),
-            restrictFilenames: true,
-            noCheckCertificates: true,
-            noWarnings: true,
-            newline: true,
-            proxy: PROXY_URL,
-            limitRate: chosenLimitRateK(policy.speedLimitKbps),
-            ...(cfg.maxFileSizeMb ? { maxFilesize: `${cfg.maxFileSizeMb}M` } : {}),
-            ...(cfg.maxDurationSec ? { matchFilter: `duration <= ${cfg.maxDurationSec}` } : {}),
-            ...speedyDlArgs(),
-        }, { env: cleanedChildEnv(process.env) });
-        let aborted = false;
-        let completed = false;
-        const handleAbort = () => {
-            if (aborted || res.writableFinished)
-                return;
-            aborted = true;
-            try {
-                child.kill('SIGTERM');
-            }
-            catch { }
-            try {
-                stream?.destroy();
-            }
-            catch { }
-            try {
-                updateHistory(hist.id, { status: 'canceled' });
-            }
-            catch { }
-            try {
-                clearHistoryThrottle(hist.id);
-            }
-            catch { }
-            try {
-                emitProgress(hist.id, { stage: 'canceled' });
-            }
-            catch { }
-            try {
-                pushSse(hist.id, { id: hist.id, status: 'canceled' }, 'end');
-            }
-            catch { }
-            try {
-                sseListeners.delete(hist.id);
-            }
-            catch { }
-        };
-        res.on('close', handleAbort);
-        res.on('aborted', handleAbort);
-        const onProgress = (buf) => {
-            const text = buf.toString();
-            const { pct } = parseDlLine(text);
-            if (typeof pct === 'number') {
-                updateHistoryThrottled(hist.id, pct);
-                emitProgress(hist.id, { progress: pct, stage: 'downloading' });
-            }
-            if (hasProgressHint(text, ['merging formats', 'merging'])) {
-                updateHistoryThrottled(hist.id, 95);
-                emitProgress(hist.id, { progress: 95, stage: 'merging' });
-            }
-        };
-        child.stdout?.on('data', onProgress);
-        child.stderr?.on('data', onProgress);
-        await new Promise((resolve, reject) => {
-            child.on('error', reject);
-            child.on('close', (code) => (code === 0 ? resolve() : reject(new Error(`yt-dlp exited with code ${code}`))));
-        });
-        const produced = findProducedFile(tmp, id, ['.mp4', '.mkv', '.webm']);
-        if (!produced)
-            return res.status(500).json({ error: 'output_not_found' });
-        const full = path.join(tmp, produced);
-        const stat = fs.statSync(full);
-        const ext = path.extname(produced).toLowerCase();
-        const videoType = ext === '.mkv' ? 'video/x-matroska' : ext === '.webm' ? 'video/webm' : 'video/mp4';
-        res.setHeader('Content-Type', videoType);
-        const safe = safeName(title || 'video');
-        res.setHeader('Content-Disposition', `attachment; filename="${safe}${ext}"`);
-        res.setHeader('Content-Length', String(stat.size));
-        res.setHeader('Cache-Control', 'no-store');
-        res.setHeader('Accept-Ranges', 'bytes');
-        if (req.method === 'HEAD')
-            return res.end();
-        stream = fs.createReadStream(full);
-        stream.pipe(res);
-        stream.on('close', () => { fs.unlink(full, () => { }); });
-        const finalize = () => {
-            if (aborted || completed)
-                return;
-            completed = true;
-            updateHistory(hist.id, { status: 'completed', progress: 100, size: `${Math.round(stat.size / 1024 / 1024)} MB` });
-            clearHistoryThrottle(hist.id);
-            emitProgress(hist.id, { progress: 100, stage: 'completed', size: stat.size });
-            try {
-                pushSse(hist.id, { id: hist.id, status: 'completed' }, 'end');
-            }
-            catch { }
-            try {
-                sseListeners.delete(hist.id);
-            }
-            catch { }
-        };
-        res.on('finish', finalize);
-    }
-    catch (err) {
-        log.error('download_best_failed', err?.message || err);
-        if (histId) {
-            updateHistory(histId, { status: 'failed' });
-            clearHistoryThrottle(histId);
-            try {
-                emitProgress(histId, { stage: 'failed' });
-                pushSse(histId, { id: histId, status: 'failed' }, 'end');
-                try {
-                    sseListeners.delete(histId);
-                }
-                catch { }
-            }
-            catch { }
-        }
-        res.status(500).json({ error: 'download_failed', details: String(err?.stderr || err?.message || err) });
-    }
-});
-// ========================
-// /api/download/audio (stream)
-// ========================
-app.get('/api/download/audio', requireAuth, async (req, res) => {
-    const sourceUrl = req.query.url || '';
-    const title = req.query.title || 'audio';
-    const fmt = coerceAudioFormat(req.query.format, DEFAULT_AUDIO_FORMAT);
-    if (!fmt)
-        return res.status(400).json({ error: 'invalid_format' });
-    if (!isUrlAllowed(sourceUrl, cfg))
-        return res.status(400).json({ error: 'invalid_url' });
-    try {
-        await assertPublicHttpHost(sourceUrl);
-    }
-    catch (e) {
-        return res.status(400).json({ ok: false, error: { code: e?.code || 'SSRF_FORBIDDEN', message: e?.message || 'Forbidden host' } });
-    }
-    const tmp = fs.realpathSync(os.tmpdir());
-    const id = randomUUID();
-    const outPath = path.join(tmp, `${id}.%(ext)s`);
-    let histId;
-    try {
-        const policy = policyFor(req.user?.plan);
-        log.info('download_audio_start', sourceUrl);
-        const hist = appendHistory({ title, url: sourceUrl, type: 'audio', format: fmt.toUpperCase(), status: 'in-progress' });
-        histId = hist.id;
-        emitProgress(hist.id, { progress: 0, stage: 'starting' });
-        let stream = null;
-        const child = ytdlp.exec(sourceUrl, {
-            ...selectAudioFormat(fmt),
-            output: outPath,
-            addHeader: makeHeaders(sourceUrl),
-            restrictFilenames: true,
-            noCheckCertificates: true,
-            noWarnings: true,
-            newline: true,
-            proxy: PROXY_URL,
-            limitRate: chosenLimitRateK(policy.speedLimitKbps),
-            ...(cfg.maxFileSizeMb ? { maxFilesize: `${cfg.maxFileSizeMb}M` } : {}),
-            ...(cfg.maxDurationSec ? { matchFilter: `duration <= ${cfg.maxDurationSec}` } : {}),
-        }, { env: cleanedChildEnv(process.env) });
-        let aborted = false;
-        let completed = false;
-        const handleAbort = () => {
-            if (aborted || res.writableFinished)
-                return;
-            aborted = true;
-            try {
-                child.kill('SIGTERM');
-            }
-            catch { }
-            try {
-                stream?.destroy();
-            }
-            catch { }
-            try {
-                updateHistory(hist.id, { status: 'canceled' });
-            }
-            catch { }
-            try {
-                clearHistoryThrottle(hist.id);
-            }
-            catch { }
-            try {
-                emitProgress(hist.id, { stage: 'canceled' });
-            }
-            catch { }
-            try {
-                pushSse(hist.id, { id: hist.id, status: 'canceled' }, 'end');
-            }
-            catch { }
-            try {
-                sseListeners.delete(hist.id);
-            }
-            catch { }
-        };
-        res.on('close', handleAbort);
-        res.on('aborted', handleAbort);
-        const onProgress = (buf) => {
-            const text = buf.toString();
-            const { pct } = parseDlLine(text);
-            if (typeof pct === 'number') {
-                updateHistoryThrottled(hist.id, pct);
-                emitProgress(hist.id, { progress: pct, stage: 'downloading' });
-            }
-            if (hasProgressHint(text, ['extractaudio', 'destination', 'convert', 'merging'])) {
-                updateHistoryThrottled(hist.id, 90);
-                emitProgress(hist.id, { progress: 90, stage: 'converting' });
-            }
-        };
-        child.stdout?.on('data', onProgress);
-        child.stderr?.on('data', onProgress);
-        await new Promise((resolve, reject) => {
-            child.on('error', reject);
-            child.on('close', (code) => (code === 0 ? resolve() : reject(new Error(`yt-dlp exited with code ${code}`))));
-        });
-        const produced = findProducedFile(tmp, id, ['.mp3', '.m4a', '.aac', '.opus', '.flac', '.wav', '.ogg', '.oga', '.alac']);
-        if (!produced)
-            return res.status(500).json({ error: 'output_not_found' });
-        const full = path.join(tmp, produced);
-        const stat = fs.statSync(full);
-        const extname = path.extname(produced).replace(/^\./, '').toLowerCase();
-        const contentType = extname === 'mp3' ? 'audio/mpeg'
-            : extname === 'opus' ? 'audio/opus'
-                : extname === 'ogg' || extname === 'oga' || extname === 'vorbis' ? 'audio/ogg'
-                    : extname === 'wav' ? 'audio/wav'
-                        : 'audio/mp4';
-        res.setHeader('Content-Type', contentType);
-        const safe = safeName(title || 'audio');
-        const ext = extname || fmt;
-        res.setHeader('Content-Disposition', `attachment; filename="${safe}.${ext}"`);
-        res.setHeader('Content-Length', String(stat.size));
-        res.setHeader('Cache-Control', 'no-store');
-        res.setHeader('Accept-Ranges', 'bytes');
-        if (req.method === 'HEAD')
-            return res.end();
-        stream = fs.createReadStream(full);
-        stream.pipe(res);
-        stream.on('close', () => { fs.unlink(full, () => { }); });
-        const finalize = () => {
-            if (aborted || completed)
-                return;
-            completed = true;
-            updateHistory(hist.id, { status: 'completed', progress: 100, size: `${Math.round(stat.size / 1024 / 1024)} MB` });
-            clearHistoryThrottle(hist.id);
-            emitProgress(hist.id, { progress: 100, stage: 'completed', size: stat.size });
-            try {
-                pushSse(hist.id, { id: hist.id, status: 'completed' }, 'end');
-            }
-            catch { }
-            try {
-                sseListeners.delete(hist.id);
-            }
-            catch { }
-        };
-        res.on('finish', finalize);
-    }
-    catch (err) {
-        log.error('download_audio_failed', err?.message || err);
-        if (histId) {
-            updateHistory(histId, { status: 'failed' });
-            clearHistoryThrottle(histId);
-            try {
-                emitProgress(histId, { stage: 'failed' });
-                pushSse(histId, { id: histId, status: 'failed' }, 'end');
-                try {
-                    sseListeners.delete(histId);
-                }
-                catch { }
-            }
-            catch { }
-        }
-        res.status(500).json({ error: 'download_failed', details: String(err?.stderr || err?.message || err) });
-    }
-});
-// ========================
-// /api/download/chapter (sekcija)
-// ========================
-app.get('/api/download/chapter', requireAuth, async (req, res) => {
-    try {
-        const sourceUrl = String(req.query.url || '');
-        const start = Number(req.query.start || 0);
-        const end = Number(req.query.end || 0);
-        const title = String(req.query.title || 'clip');
-        const name = String(req.query.name || 'chapter');
-        const index = String(req.query.index || '1');
-        if (!isUrlAllowed(sourceUrl, cfg) || !Number.isFinite(start) || !(end > start)) {
-            return res.status(400).json({ error: 'invalid_params' });
-        }
-        await assertPublicHttpHost(sourceUrl);
-        const policy = policyFor(req.user?.plan);
-        if (!policy.allowChapters)
-            return res.status(403).json({ error: 'CHAPTERS_NOT_ALLOWED' });
-        const tmp = fs.realpathSync(os.tmpdir());
-        const id = randomUUID();
-        const outPath = path.join(tmp, `${id}.%(ext)s`);
-        const section = `${Math.max(0, start)}-${end}`;
-        const child = ytdlp.exec(sourceUrl, {
-            format: selectVideoFormat(policy),
-            output: outPath,
-            addHeader: makeHeaders(sourceUrl),
-            noCheckCertificates: true,
-            noWarnings: true,
-            downloadSections: section,
-            ...speedyDlArgs(),
-            ...(cfg.maxFileSizeMb ? { maxFilesize: `${cfg.maxFileSizeMb}M` } : {}),
-            ...(cfg.maxDurationSec ? { matchFilter: `duration <= ${cfg.maxDurationSec}` } : {}),
-        }, { env: cleanedChildEnv(process.env) });
-        trapChildPromise(child, 'yt_dlp_unhandled_clip');
-        trapChildPromise(child, 'yt_dlp_unhandled_clip_audio');
-        trapChildPromise(child, 'yt_dlp_unhandled_chapter');
-        await new Promise((resolve, reject) => {
-            child.on('error', reject);
-            child.on('close', (code) => (code === 0 ? resolve() : reject(new Error(`yt-dlp exit ${code}`))));
-        });
-        const produced = findProducedFile(tmp, id, ['.mp4', '.mkv', '.webm']);
-        if (!produced)
-            return res.status(500).json({ error: 'output_not_found' });
-        const full = path.join(tmp, produced);
-        const stat = fs.statSync(full);
-        res.setHeader('Content-Type', /\.mkv$/i.test(full) ? 'video/x-matroska' : /\.webm$/i.test(full) ? 'video/webm' : 'video/mp4');
-        const safeBase = safeName(String(title || 'clip'));
-        const safeChap = safeName(String(name || 'chapter'));
-        res.setHeader('Content-Disposition', `attachment; filename="${safeBase}.${index}_${safeChap}${path.extname(full)}"`);
-        res.setHeader('Content-Length', String(stat.size));
-        res.setHeader('Cache-Control', 'no-store');
-        res.setHeader('Accept-Ranges', 'bytes');
-        if (req.method === 'HEAD')
-            return res.end();
-        const stream = fs.createReadStream(full);
-        const endStream = () => { try {
-            stream.destroy();
-        }
-        catch { } };
-        res.on('close', endStream);
-        res.on('aborted', endStream);
-        stream.pipe(res);
-        stream.on('close', () => { try {
-            fs.unlinkSync(full);
-        }
-        catch { } });
-    }
-    catch (err) {
-        log.error('download_chapter_failed', err?.message || err);
-        res.status(500).json({ error: 'download_failed' });
-    }
-});
+setupDownloadRoutes(app, requireAuth, cfg, log, { appendHistory, updateHistory, updateHistoryThrottled }, { emitProgress, endSseFor }, { PROXY_URL });
 // ========================
 // Background jobs (queue)
 // ========================
@@ -1670,6 +1255,13 @@ app.post('/api/job/start/clip', requireAuth, async (req, res) => {
 // Embed subs
 app.post('/api/job/start/embed-subs', requireAuth, async (req, res) => {
     try {
+        // FFmpeg gate - embedding subtitles requires FFmpeg for muxing
+        if (!ffmpegEnabled()) {
+            return res.status(501).json({
+                error: 'feature_disabled',
+                message: 'Embedding subtitles requires FFmpeg which is disabled in this deployment'
+            });
+        }
         const { url: sourceUrl, title = 'video', lang, format = 'srt', container = 'mp4' } = (req.body || {});
         if (!sourceUrl || !/^https?:\/\//i.test(sourceUrl) || !isUrlAllowed(sourceUrl, cfg))
             return res.status(400).json({ error: 'invalid_url' });
@@ -1979,6 +1571,7 @@ app.post('/api/batch', batchRateLimit, requireAuth, async (req, res) => {
                 }
                 job.child = child;
                 trapChildPromise(child, mode === 'audio' ? 'yt_dlp_unhandled_batch_audio' : 'yt_dlp_unhandled_batch_video');
+                let stderrBuf = '';
                 const onProgress = (buf) => {
                     const text = buf.toString();
                     const { pct, speed, eta } = parseDlLine(text);
@@ -1990,8 +1583,12 @@ app.post('/api/batch', batchRateLimit, requireAuth, async (req, res) => {
                         emitProgress(hist.id, { stage: mode === 'audio' ? 'converting' : 'processing', batchId });
                     }
                 };
+                const onStderr = (buf) => {
+                    stderrBuf += buf.toString();
+                    onProgress(buf);
+                };
                 child.stdout?.on('data', onProgress);
-                child.stderr?.on('data', onProgress);
+                child.stderr?.on('data', onStderr);
                 child.on('close', (code) => {
                     running.delete(hist.id);
                     let succeeded = false;
@@ -2021,7 +1618,14 @@ app.post('/api/batch', batchRateLimit, requireAuth, async (req, res) => {
                     }
                     catch { }
                     if (!succeeded) {
-                        finalizeJob(hist.id, 'failed', { job, keepJob: false, keepFiles: false, extra: { batchId } });
+                        // Normalize yt-dlp error for better UX
+                        const normalized = normalizeYtError(stderrBuf);
+                        finalizeJob(hist.id, 'failed', {
+                            job,
+                            keepJob: false,
+                            keepFiles: false,
+                            extra: { batchId, errorCode: normalized.code, errorMessage: normalized.message }
+                        });
                     }
                     schedule();
                 });
@@ -2063,10 +1667,7 @@ app.post('/api/batch/:id/cancel', requireAuth, (req, res) => {
             finalizeJob(it.jobId, 'canceled', { job, keepJob: false, keepFiles: false, extra: { batchId: b.id } });
             continue;
         }
-        try {
-            job.child?.kill('SIGTERM');
-        }
-        catch { }
+        safeKill(job.child);
         updateHistory(it.jobId, { status: 'canceled' });
         emitProgress(it.jobId, { stage: 'canceled', batchId: b.id });
         finalizeJob(it.jobId, 'canceled', { job, keepJob: false, keepFiles: false, extra: { batchId: b.id } });
@@ -2079,10 +1680,7 @@ app.post('/api/batch/:id/cancel', requireAuth, (req, res) => {
 // ========================
 app.get('/api/progress/:id', requireAuthOrSigned('progress'), progressBucket, (req, res) => {
     const id = req.params.id;
-    res.setHeader('Content-Type', 'text/event-stream');
-    res.setHeader('Cache-Control', 'no-store');
-    res.setHeader('X-Accel-Buffering', 'no');
-    res.setHeader('Connection', 'keep-alive');
+    setSseHeaders(res);
     appendVary(res, 'Authorization');
     res.flushHeaders?.();
     res.write(`retry: 5000\n`);
@@ -2179,13 +1777,7 @@ app.post('/api/job/cancel/:id', requireAuth, (req, res) => {
         return res.json({ ok: true });
     }
     try {
-        job.child?.kill('SIGTERM');
-        const pid = job.child?.pid;
-        if (pid && !job.child?.killed)
-            setTimeout(() => { try {
-                process.kill(pid, 'SIGKILL');
-            }
-            catch { } }, 5000);
+        safeKill(job.child);
         updateHistory(id, { status: 'canceled' });
         emitProgress(id, { stage: 'canceled' });
         finalizeJob(id, 'canceled', { job, keepJob: false, keepFiles: false });
@@ -2239,7 +1831,7 @@ app.post('/api/job/file/:id/sign', requireAuth, signBucket, (req, res) => {
     const token = signToken({ sub: `job:${id}`, scope, ver: job.version }, ttl);
     signIssued.inc({ scope });
     signTtl.observe(ttl);
-    res.setHeader('Cache-Control', 'no-store');
+    setNoStore(res);
     return res.json({ token, expiresAt: Date.now() + ttl * 1000, queryParam: 's' });
 });
 app.post('/api/progress/:id/sign', requireAuth, signBucket, (req, res) => {
@@ -2254,7 +1846,7 @@ app.post('/api/progress/:id/sign', requireAuth, signBucket, (req, res) => {
     const token = signToken({ sub: `job:${id}`, scope, ver: job.version }, ttl);
     signIssued.inc({ scope });
     signTtl.observe(ttl);
-    res.setHeader('Cache-Control', 'no-store');
+    setNoStore(res);
     return res.json({ token, expiresAt: Date.now() + ttl * 1000, queryParam: 's' });
 });
 app.get('/api/job/file/:id', requireAuthOrSigned('download'), jobBucket, (req, res) => {
@@ -2285,9 +1877,7 @@ app.get('/api/job/file/:id', requireAuthOrSigned('download'), jobBucket, (req, r
         const h = readHistory().find((x) => x.id === id);
         const base = (h?.title || (job.type === 'audio' ? 'audio' : 'video')).replace(/[^\w.-]+/g, '_');
         const extName = path.extname(full).replace(/^\./, '') || (job.type === 'audio' ? 'm4a' : 'mp4');
-        res.setHeader('Content-Disposition', `attachment; filename="${base}.${extName}"`);
-        res.setHeader('Cache-Control', 'no-store');
-        res.setHeader('Accept-Ranges', 'bytes');
+        setDownloadHeaders(res, `${base}.${extName}`, undefined, etag);
         const ifNoneMatch = req.headers['if-none-match'];
         if (ifNoneMatch) {
             const tags = String(ifNoneMatch).split(',').map((t) => t.trim());
@@ -2299,42 +1889,68 @@ app.get('/api/job/file/:id', requireAuthOrSigned('download'), jobBucket, (req, r
         }
         const range = req.headers.range;
         if (range) {
-            const m = String(range).match(/bytes=(\d+)-(\d+)?/);
-            if (m) {
-                const start = parseInt(m[1], 10);
-                const end = m[2] ? parseInt(m[2], 10) : (stat.size - 1);
-                if (Number.isFinite(start) && start >= 0 && start < stat.size && end >= start) {
-                    res.status(206);
-                    res.setHeader('Content-Range', `bytes ${start}-${end}/${stat.size}`);
-                    res.setHeader('Content-Length', String(end - start + 1));
-                    appendVary(res, 'Range');
-                    const stream = fs.createReadStream(full, { start, end });
-                    const isFull = (start === 0 && end === stat.size - 1);
-                    const ender = () => { try {
-                        stream.destroy();
-                    }
-                    catch { } };
-                    res.on('close', ender);
-                    res.on('aborted', ender);
-                    stream.pipe(res);
-                    // Finalize job only if complete file was delivered (0..size-1)
-                    stream.on('close', () => {
-                        if (isFull) {
-                            try {
-                                fs.unlinkSync(full);
-                            }
-                            catch { }
-                            finalizeJob(id, 'completed', { job, keepJob: false, keepFiles: false });
-                        }
-                    });
-                    return;
+            const rangeStr = String(range);
+            // Parse standard range (bytes=start-end) or suffix range (bytes=-N)
+            let start, end;
+            const suffixMatch = rangeStr.match(/bytes=-(\d+)$/);
+            const standardMatch = rangeStr.match(/bytes=(\d+)-(\d+)?$/);
+            if (suffixMatch) {
+                // Suffix range: bytes=-N → last N bytes
+                const suffix = parseInt(suffixMatch[1], 10);
+                if (suffix <= 0 || !Number.isFinite(suffix)) {
+                    res.status(416);
+                    res.setHeader('Content-Range', `bytes */${stat.size}`);
+                    return res.end();
                 }
+                start = Math.max(0, stat.size - suffix);
+                end = stat.size - 1;
             }
-            res.status(416);
-            res.setHeader('Content-Range', `bytes */${stat.size}`);
-            return res.end();
+            else if (standardMatch) {
+                // Standard range: bytes=start-end
+                start = parseInt(standardMatch[1], 10);
+                end = standardMatch[2] ? parseInt(standardMatch[2], 10) : (stat.size - 1);
+            }
+            else {
+                // Invalid range syntax
+                res.status(416);
+                res.setHeader('Content-Range', `bytes */${stat.size}`);
+                return res.end();
+            }
+            // Validate range bounds
+            if (!Number.isFinite(start) || !Number.isFinite(end) || start < 0 || end < start || start >= stat.size) {
+                res.status(416);
+                res.setHeader('Content-Range', `bytes */${stat.size}`);
+                return res.end();
+            }
+            // Clamp end to file size
+            end = Math.min(end, stat.size - 1);
+            res.status(206);
+            res.setHeader('Content-Range', `bytes ${start}-${end}/${stat.size}`);
+            res.setHeader('Content-Length', String(end - start + 1));
+            appendVary(res, 'Range');
+            const stream = fs.createReadStream(full, { start, end });
+            const isFull = (start === 0 && end === stat.size - 1);
+            const ender = () => { try {
+                stream.destroy();
+            }
+            catch { } };
+            res.on('close', ender);
+            res.on('aborted', ender);
+            stream.pipe(res);
+            // Finalize job only if complete file was delivered (0..size-1)
+            stream.on('close', () => {
+                if (isFull) {
+                    try {
+                        fs.unlinkSync(full);
+                    }
+                    catch { }
+                    finalizeJob(id, 'completed', { job, keepJob: false, keepFiles: false });
+                }
+            });
+            return;
         }
         res.setHeader('Content-Length', String(stat.size));
+        appendVary(res, 'Range'); // Prevent CDN from caching 200 and returning it for Range requests
         if (req.method === 'HEAD')
             return res.end();
         const stream = fs.createReadStream(full);
@@ -2364,7 +1980,7 @@ app.get('/api/job/file/:id', requireAuthOrSigned('download'), jobBucket, (req, r
 // ========================
 app.get('/api/subtitles/download', requireAuth, async (req, res) => {
     // FFmpeg-free mode: subtitles feature disabled
-    if (process.env.ENABLE_FFMPEG === 'false') {
+    if (!ffmpegEnabled()) {
         return res.status(501).json({
             error: 'feature_disabled',
             message: 'Subtitle extraction requires FFmpeg which is disabled in this deployment'
@@ -2394,28 +2010,9 @@ app.get('/api/subtitles/download', requireAuth, async (req, res) => {
             res.setHeader('Content-Disposition', `attachment; filename="${safe}.vtt"`);
             return Readable.fromWeb(upstream.body).pipe(res);
         }
-        // FFmpeg subtitle conversion removed - this code path should never execute
-        // due to early return above when ENABLE_FFMPEG=false
+        // FFmpeg subtitle conversion not implemented in FFmpeg-free mode
+        // If we reach here, it means the request requires FFmpeg processing
         return res.status(501).json({ error: 'ffmpeg_not_available' });
-        const stat = fs.statSync(outPath);
-        res.setHeader('Content-Type', outExt === 'srt' ? 'application/x-subrip; charset=utf-8' : 'text/vtt; charset=utf-8');
-        const safe = safeName(title || 'subtitles');
-        res.setHeader('Content-Disposition', `attachment; filename="${safe}.${outExt}"`);
-        res.setHeader('Content-Length', String(stat.size));
-        if (req.method === 'HEAD') {
-            try {
-                fs.unlinkSync(outPath);
-            }
-            catch { }
-            ;
-            return res.end();
-        }
-        const stream = fs.createReadStream(outPath);
-        stream.pipe(res);
-        stream.on('close', () => { try {
-            fs.unlinkSync(outPath);
-        }
-        catch { } });
     }
     catch (err) {
         log.error('subtitles_download_failed', err?.message || err);
@@ -2446,22 +2043,31 @@ app.get('/api/metrics', requireAuth, (_req, res) => {
 // Orphan reaper
 // ========================
 const REAPER_MS = 10 * 60 * 1000; // 10m
+const BATCH_TTL_MS = 24 * 60 * 60 * 1000; // 24h - finished batches older than this will be deleted
 if (process.env.NODE_ENV !== 'test') {
     setInterval(() => {
         try {
             metrics.reaper.lastRunTimestamp = Math.floor(Date.now() / 1000);
+            const now = Date.now();
+            let reaperRaces = 0;
+            // Clean up old job files
             for (const job of jobs.values()) {
                 if (!job.produced)
                     continue;
                 const full = path.join(job.tmpDir, job.produced);
                 if (fs.existsSync(full)) {
-                    const age = Date.now() - fs.statSync(full).mtimeMs;
+                    const stat = fs.statSync(full);
+                    const age = now - stat.mtimeMs;
                     if (age > REAPER_MS) {
                         try {
                             fs.unlinkSync(full);
                             metrics.reaper.filesReaped += 1;
                         }
-                        catch { }
+                        catch (err) {
+                            // Could be race with finalize - file already deleted
+                            reaperRaces++;
+                            log.debug('reaper_file_race', { jobId: job.id, file: job.produced });
+                        }
                         try {
                             jobs.delete(job.id);
                             metrics.reaper.jobsDeleted += 1;
@@ -2477,8 +2083,29 @@ if (process.env.NODE_ENV !== 'test') {
                     catch { }
                 }
             }
+            // Clean up finished batches older than TTL (prevents memory leak)
+            let batchesReaped = 0;
+            for (const [id, batch] of batches) {
+                if (batch.finishedAt && (now - batch.finishedAt) > BATCH_TTL_MS) {
+                    try {
+                        batches.delete(id);
+                        batchesReaped++;
+                        log.debug('batch_reaped', { id, age: Math.floor((now - batch.finishedAt) / 60000) + 'min' });
+                    }
+                    catch { }
+                }
+            }
+            if (reaperRaces > 0) {
+                metrics.reaper.reaperFinalizeRace += reaperRaces;
+                log.debug('reaper_races_detected', { count: reaperRaces });
+            }
+            if (batchesReaped > 0) {
+                log.info('reaper_batches_cleaned', { count: batchesReaped });
+            }
         }
-        catch { }
+        catch (err) {
+            log.error('reaper_error', { error: String(err) });
+        }
     }, REAPER_MS);
 }
 // ========================
@@ -2532,8 +2159,13 @@ function startServerWithRetry(port, maxAttempts = 40) {
                     writeServerSettings({ lastPort: port });
                 }
                 catch { }
+                const corsValue = process.env.CORS_ORIGIN || 'ALL (no restrictions)';
                 try {
-                    log.info(`yt-dlp server listening on http://localhost:${port} (CORS: ${String(cfg.corsOrigin || 'disabled')})`);
+                    log.info(`yt-dlp server listening on http://localhost:${port}`);
+                }
+                catch { }
+                try {
+                    log.info(`CORS allowed origins: ${corsValue}`);
                 }
                 catch { }
                 resolve(server);
