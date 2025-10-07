@@ -79,13 +79,30 @@ app.use(limiter);
 // Manual CORS implementation - cors package was not deploying correctly to Railway
 app.use((req, res, next) => {
   const origin = req.headers.origin;
+  const corsOriginEnv = process.env.CORS_ORIGIN;
   
-  // Check if origin is allowed
-  if (origin && isOriginAllowed(origin, process.env.CORS_ORIGIN)) {
-    res.setHeader('Access-Control-Allow-Origin', origin);
+  // Log CORS check for debugging (only on first request or OPTIONS)
+  if (req.method === 'OPTIONS' || !res.locals.corsLogged) {
+    log.debug(`CORS check: origin=${origin}, allowed=${corsOriginEnv || 'ALL'}`);
+    res.locals.corsLogged = true;
   }
   
-  res.setHeader('Access-Control-Allow-Credentials', 'true');
+  // Check if origin is allowed
+  const isAllowed = isOriginAllowed(origin, corsOriginEnv);
+  
+  if (origin && isAllowed) {
+    res.setHeader('Access-Control-Allow-Origin', origin);
+    res.setHeader('Access-Control-Allow-Credentials', 'true');
+  } else if (!corsOriginEnv) {
+    // Development mode - no CORS_ORIGIN set, allow all
+    res.setHeader('Access-Control-Allow-Origin', origin || '*');
+    res.setHeader('Access-Control-Allow-Credentials', 'true');
+  } else if (origin) {
+    // Origin not allowed - log warning
+    log.warn(`CORS: Rejected origin ${origin} (allowed: ${corsOriginEnv})`);
+  }
+  
+  // Always set these headers regardless of origin
   res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS,HEAD');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type,Authorization,Accept,X-Requested-With,Range,If-Range,If-None-Match,If-Modified-Since,X-Req-Id,x-req-id,X-Request-Id,X-Client-Trace,Traceparent,traceparent,X-Traceparent');
   res.setHeader('Access-Control-Expose-Headers', 'Content-Disposition,Content-Length,Content-Type,ETag,Last-Modified,Accept-Ranges,Content-Range,X-Request-Id,Proxy-Status,Retry-After,X-Traceparent');
@@ -2428,7 +2445,9 @@ function startServerWithRetry(port: number, maxAttempts = 40): Promise<import('h
       const onListening = () => {
         server.off('error', onError);
         try { writeServerSettings({ lastPort: port }); } catch {}
-        try { log.info(`yt-dlp server listening on http://localhost:${port} (CORS: ${String(cfg.corsOrigin || 'disabled')})`); } catch {}
+        const corsValue = process.env.CORS_ORIGIN || 'ALL (no restrictions)';
+        try { log.info(`yt-dlp server listening on http://localhost:${port}`); } catch {}
+        try { log.info(`CORS allowed origins: ${corsValue}`); } catch {}
         resolve(server);
       };
       server.once('error', onError);
