@@ -66,7 +66,8 @@ const trustedProxyCidrs = (process.env.TRUST_PROXY_CIDRS || '')
 if (trustedProxyCidrs.length > 0) {
   app.set('trust proxy', trustedProxyCidrs);
 } else {
-  app.set('trust proxy', ['loopback', 'linklocal', 'uniquelocal']);
+  // Railway is behind a single proxy hop - trust first proxy for accurate rate limit key
+  app.set('trust proxy', 1);
 }
 applySecurity(app, process.env.CORS_ORIGIN);
 
@@ -86,8 +87,8 @@ app.use((req, res, next) => {
   
   res.setHeader('Access-Control-Allow-Credentials', 'true');
   res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS,HEAD');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type,Authorization,Accept,X-Requested-With,X-Req-Id,x-req-id,X-Request-Id,X-Client-Trace,Traceparent,traceparent,X-Traceparent');
-  res.setHeader('Access-Control-Expose-Headers', 'Content-Disposition,Content-Length,Content-Type,X-Request-Id,Proxy-Status,Retry-After,X-Traceparent');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type,Authorization,Accept,X-Requested-With,Range,If-Range,If-None-Match,If-Modified-Since,X-Req-Id,x-req-id,X-Request-Id,X-Client-Trace,Traceparent,traceparent,X-Traceparent');
+  res.setHeader('Access-Control-Expose-Headers', 'Content-Disposition,Content-Length,Content-Type,ETag,Last-Modified,Accept-Ranges,Content-Range,X-Request-Id,Proxy-Status,Retry-After,X-Traceparent');
   res.setHeader('Access-Control-Max-Age', '86400');
   res.setHeader('Vary', 'Origin');
   
@@ -303,6 +304,12 @@ function makeHeaders(u: string): string[] {
     }
     if (h.includes('x.com') || h.includes('twitter.com')) {
       return ['referer: https://x.com', 'user-agent: Mozilla/5.0'];
+    }
+    if (h.includes('instagram.com')) {
+      return ['referer: https://www.instagram.com', 'user-agent: Mozilla/5.0'];
+    }
+    if (h.includes('facebook.com') || h.includes('fbcdn.net')) {
+      return ['referer: https://www.facebook.com', 'user-agent: Mozilla/5.0'];
     }
   } catch {}
   return ['user-agent: Mozilla/5.0'];
@@ -875,7 +882,7 @@ const keyer = (req: any) => {
   return resolveClientIp(req);
 };
 const dlLimiter = rateLimit({ windowMs: 60_000, max: 20, keyGenerator: keyer });
-// Only apply blanket auth to /api/download, not /api/job (job routes use per-route auth or signed URLs)
+// Only apply auth + limiter to /api/download, NOT /api/job (job routes use per-route auth or signed URLs)
 app.use('/api/download', requireAuth as any, dlLimiter);
 
 // ========================
@@ -2024,6 +2031,15 @@ app.get('/api/progress/:id', requireAuthOrSigned('progress'), progressBucket, (r
     try { res.write(chunk); } catch { cleanup(); }
   };
 
+  // Activity-based timeout reset: 1 hour instead of 10 minutes
+  const arm = () => {
+    if (timeout) clearTimeout(timeout);
+    timeout = setTimeout(() => {
+      pushSse(id, { id, status: 'timeout' }, 'end');
+      cleanup();
+    }, 60 * 60 * 1000); // 1 hour
+  };
+
   const lastEventHeader = req.header('Last-Event-ID');
   const lastEventId = lastEventHeader && !Number.isNaN(Number(lastEventHeader)) ? Number(lastEventHeader) : undefined;
   if (typeof lastEventId === 'number') {
@@ -2053,11 +2069,11 @@ app.get('/api/progress/:id', requireAuthOrSigned('progress'), progressBucket, (r
   (req.socket as any)?.on?.('close', cleanup);
 
   safeWrite(`event: ping\ndata: {"ok":true}\n\n`);
-  hb = setInterval(() => safeWrite(`event: ping\ndata: {"ts":${Date.now()}}\n\n`), 15000);
-  timeout = setTimeout(() => {
-    pushSse(id, { id, status: 'timeout' }, 'end');
-    cleanup();
-  }, 10 * 60 * 1000);
+  arm(); // Set initial timeout
+  hb = setInterval(() => {
+    safeWrite(`event: ping\ndata: {"ts":${Date.now()}}\n\n`);
+    arm(); // Reset timeout on each heartbeat (activity-based)
+  }, 15000);
 });
 
 // ========================
@@ -2203,13 +2219,15 @@ app.get('/api/job/file/:id', requireAuthOrSigned('download'), jobBucket, (req: a
           res.status(206);
           res.setHeader('Content-Range', `bytes ${start}-${end}/${stat.size}`);
           res.setHeader('Content-Length', String(end - start + 1));
+          appendVary(res, 'Range');
           const stream = fs.createReadStream(full, { start, end });
+          const isFull = (start === 0 && end === stat.size - 1);
           const ender = () => { try { stream.destroy(); } catch {} };
           res.on('close', ender); res.on('aborted', ender);
           stream.pipe(res);
           // Finalize job only if complete file was delivered (0..size-1)
           stream.on('close', () => {
-            if (start === 0 && end === stat.size - 1) {
+            if (isFull) {
               try { fs.unlinkSync(full); } catch {}
               finalizeJob(id, 'completed', { job, keepJob: false, keepFiles: false });
             }
