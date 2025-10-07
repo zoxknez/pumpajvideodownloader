@@ -5,42 +5,25 @@
 - [x] Railway: Skip youtube-dl-exec broken postinstall (`--ignore-scripts`)
 - [x] Vercel: Fix module resolution (simplified installCommand)
 
----
+## ✅ P0 + P1 Critical Fixes (DONE - Commit 509e208)
 
-## 🔧 Recommended Improvements (Priority Order)
-
-### 1. SSE Timeout vs Token TTL (Robustness) 🟡 MEDIUM
-
-**Problem:** Server closes SSE after ~10min, but signed token TTL is 600s. Long jobs may experience silent disconnects.
-
-**Solution:** Activity-based timeout reset
-
-```typescript
-// /api/progress/:id - around line ~700
-const SSE_TIMEOUT_MS = 60 * 60 * 1000; // 1 hour instead of 10min
-
-const arm = () => {
-  if (timeout) clearTimeout(timeout);
-  timeout = setTimeout(() => {
-    pushSse(id, { id, status: 'timeout' }, 'end');
-    cleanup();
-  }, SSE_TIMEOUT_MS);
-};
-
-arm(); // Initial arm
-
-// Reset timeout on every event (ping or progress)
-hb = setInterval(() => {
-  safeWrite(`event: ping\ndata: {"ts":${Date.now()}}\n\n`);
-  arm(); // Reset timeout on ping
-}, 15000);
-```
-
-**File:** `server/index.ts` around line ~700-730 (SSE /api/progress/:id route)
+- [x] **P0: Signed URL Auth** - Removed `/api/job` from global `requireAuth` middleware
+- [x] **P0: 206 Range Cleanup** - Added `Vary: Range` + cleanup for full range (0..size-1)
+- [x] **P0: formatId Injection** - Already validated (regex present on line 891) ✅
+- [x] **P0: SSE Buffer Leak** - Already validated (cleanup in `finalizeJob()`) ✅
+- [x] **P0: FFmpeg-free Fallbacks** - Already validated (all 8 endpoints use conditional logic) ✅
+- [x] **P1: CORS Headers** - Added Range/ETag/Last-Modified support for progressive downloads
+- [x] **P1: SSE Timeout (1h)** - Activity-based reset (resets on every heartbeat ping)
+- [x] **P1: IG/FB Headers** - Added Instagram + Facebook referer/user-agent to `makeHeaders()`
+- [x] **P1: Trust Proxy** - Set to `1` for Railway single-hop (accurate rate limit keys)
 
 ---
 
-### 2. Reaper vs Active Readers (Windows Safety) 🟢 LOW
+---
+
+## 🔧 Remaining Optional Improvements (Lower Priority)
+
+### 1. Active Readers Tracking (Windows Safety) 🟢 LOW
 
 **Problem:** Windows can't unlink open files. Reaper may fail on active downloads.
 
@@ -68,74 +51,11 @@ if (activeReaders.has(job.id)) {
 
 **File:** `server/index.ts` line ~150 (globals) + ~2140 (job file route) + ~560 (reaper)
 
----
-
-### 3. Vary Header for Range Responses 🟢 LOW
-
-**Problem:** Cache/proxy correctness - Range responses should vary by Range header.
-
-**Solution:** Add `Vary: Range` alongside `Vary: Authorization`
-
-```typescript
-// In /api/job/file/:id around line ~2160
-res.setHeader('Accept-Ranges', 'bytes');
-appendVary(res, 'Authorization');
-appendVary(res, 'Range'); // Add this line
-```
-
-**File:** `server/index.ts` line ~2160
+**Note:** Railway (Linux) doesn't need this - only relevant for Windows deployments.
 
 ---
 
-### 4. Headers for Instagram/Facebook 🟡 MEDIUM
-
-**Problem:** IG/FB may return 403 without proper referer/user-agent.
-
-**Solution:** Extend `makeHeaders()` function
-
-```typescript
-// In makeHeaders() function around line ~250
-if (h.includes('instagram.com')) {
-  return [
-    'referer: https://www.instagram.com',
-    'user-agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-  ];
-}
-if (h.includes('facebook.com') || h.includes('fbcdn.net')) {
-  return [
-    'referer: https://www.facebook.com',
-    'user-agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-  ];
-}
-```
-
-**File:** `server/index.ts` line ~250 (makeHeaders function)
-
----
-
-### 5. FFmpeg-Free Double Check 🟢 LOW
-
-**Status:** Already applied in commit d75e545, but verify all paths:
-
-**Checklist:**
-- [x] `/api/download/best` - Progressive fallback ✓
-- [x] `/api/download/audio` - bestaudio native ✓
-- [x] `/api/download/chapter` - Progressive fallback ✓
-- [x] Batch best video - Progressive fallback ✓
-- [x] Batch audio - bestaudio native ✓
-- [x] Batch clip - Progressive fallback ✓
-- [x] Batch convert - Progressive fallback ✓
-- [x] Batch multi-URL - Both fallbacks ✓
-
-**Verification Command:**
-```bash
-grep -n "bv\*\[height" server/index.ts | grep -v "process.env.ENABLE_FFMPEG"
-# Should return 0 results (all paths have FFmpeg-free check)
-```
-
----
-
-### 6. Signed Token Revocation (Optional) 🟢 LOW
+### 2. Signed Token Revocation (Optional) 🟢 LOW
 
 **Problem:** Signed tokens remain valid even after job completion.
 
@@ -153,58 +73,61 @@ if (!keepJob) {
 
 **File:** `server/index.ts` line ~490
 
+**Note:** Only enable if you want strict "one-time download" policy. Not critical for current use case.
+
 ---
 
-## 🧪 Production QA Checklist
+## 🧪 Production QA Checklist (Post-509e208)
 
-Before marking improvements complete, test:
+**Deployment Validation:**
+- [x] Railway build: npm ci succeeds (no postinstall errors)
+- [x] Vercel build: Module resolution works (components found)
+- [ ] Railway /health: Returns 200 OK
+- [ ] Vercel site: Loads at pumpajvideodl.com
 
-- [ ] 720p YouTube progressive video (FFmpeg-free mode)
+**P0/P1 Fixes Validation:**
+- [ ] **Signed URL:** `GET /api/job/file/:id?s=TOKEN` → 200 (not 401)
+- [ ] **Range cleanup:** Download full file via 206 → file deleted + job finalized
+- [ ] **formatId injection:** `POST /api/get-url` with `'; rm -rf /'` → 400 `invalid_format_id`
+- [ ] **SSE timeout:** Long job (>10min) maintains SSE connection (activity reset)
+- [ ] **CORS Range:** Preflight `OPTIONS` with `Access-Control-Request-Headers: range` → allowed
+- [ ] **IG headers:** Instagram video URL → lower 403 rate (monitor logs)
+- [ ] **FB headers:** Facebook video URL → lower 403 rate (monitor logs)
+- [ ] **Trust proxy:** Rate limit key uses real client IP (not Railway proxy)
+
+**FFmpeg-Free Verification:**
+- [ ] YouTube 720p video (progressive stream, no merge)
 - [ ] M4A audio direct stream (no conversion)
-- [ ] SSE reconnect after 15+ minutes (long job)
-- [ ] Partial range request (multiple segments) - file cleanup
-- [ ] `/api/get-url` with malicious formatId (`'; rm -rf /`) → 400 error
-- [ ] Instagram video download (with new headers)
-- [ ] Facebook video download (with new headers)
-- [ ] Windows: Download file while reaper runs - no unlink errors
+- [ ] All 8 batch modes work in FFmpeg-free mode
 
 ---
 
-## 📝 Implementation Notes
+## � Monitoring Metrics
 
-**SSE Timeout:** Most important for long video downloads (1080p+ playlist items).
+**Watch after deploy (commit 509e208):**
 
-**Active Readers:** Only needed if running on Windows server. Linux/Railway OK without it.
-
-**Vary Header:** Mostly for CDN/proxy correctness - not critical for direct Railway deployment.
-
-**IG/FB Headers:** Test with real URLs - some endpoints may still require cookies/auth.
-
-**Token Revocation:** Only enable if you want strict "one-time download" policy.
-
----
-
-## 🚀 Deployment Strategy
-
-**Phase 1:** Deploy current fixes (b0b783a) - verify Railway + Vercel build success
-
-**Phase 2:** Implement SSE timeout + IG/FB headers (high impact, low risk)
-
-**Phase 3:** Add active readers tracking (Windows safety net)
-
-**Phase 4:** Token revocation + Vary header (nice-to-have polish)
+| Metric | Expected Change | Reason |
+|--------|----------------|--------|
+| Railway memory | Stabilize/decrease | SSE buffer cleanup (already in place) |
+| Disk usage (orphan files) | Decrease | Range 206 cleanup on full delivery |
+| SSE timeout events | Rare (<1%) | Activity-based 1h timeout |
+| 403 errors (IG/FB URLs) | Decrease 20-30% | Referer/user-agent headers |
+| Rate limit false positives | Decrease | Trust proxy fix (req.ip = real client) |
 
 ---
 
-## 📊 Monitoring After Deploy
+## � Implementation Notes
 
-Watch for:
-- Railway memory usage (should stabilize with SSE buffer cleanup)
-- Disk usage patterns (orphan files should decrease)
-- 403 errors on IG/FB URLs (track before/after header changes)
-- SSE timeout events in logs (should be rare with activity-based reset)
+- **SSE timeout (1h):** Critical for playlists and 1080p+ downloads
+- **Active readers:** Only needed for Windows servers (Railway is Linux - skip)
+- **Token revocation:** Optional strict policy - not essential for current workflow
+- **IG/FB headers:** May still fail for private/auth-required content (expected)
 
 ---
 
 _Created: 2025-10-07_  
-_Related Commits: d75e545 (P0/P1 fixes), b0b783a (deployment fixes)_
+_Updated: 2025-10-07 (Commit 509e208)_  
+_Related Commits:_
+- `d75e545` - P0/P1 security + FFmpeg removal
+- `b0b783a` - Railway/Vercel deployment fixes  
+- `509e208` - **Final P0/P1 stabilization** (signed URL, range cleanup, SSE timeout, CORS, IG/FB, trust proxy)
