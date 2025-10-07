@@ -3,10 +3,10 @@
 nixPkgs = ['nodejs_20', 'python3']
 
 [phases.install]
-cmds = ['npm ci --prefix server']
+cmds = ['npm ci --prefix server --ignore-scripts']
 
 [phases.build]
-cmds = ['npm run build --prefix server']
+cmds = ['echo "Build 2025-10-07" && npm ci --prefix server && npm run build --prefix server']
 
 [start]
 cmd = 'node server/dist/index.js'
