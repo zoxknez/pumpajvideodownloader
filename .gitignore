@@ -62,3 +62,6 @@ server/dist/
 *.zip
 *-Complete-*.zip
 pumpaj-desktop-backup.zip
+
+# Local documentation/reports folder
+Izvestaji/

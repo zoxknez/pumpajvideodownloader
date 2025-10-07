@@ -143,17 +143,45 @@ export async function authHeaders(extra?: HeadersInit): Promise<HeadersInit> {
   const base: Record<string, string> = {};
   if (token) base['Authorization'] = `Bearer ${token}`;
   if (!extra) return base;
+  
+  // Security: Prevent extra from overriding Authorization header
   if (extra instanceof Headers) {
-    const out: Record<string, string> = { ...base };
-    extra.forEach((v, k) => { out[k] = v; });
-    return out;
+    const out: Record<string, string> = {};
+    extra.forEach((v, k) => { 
+      if (k.toLowerCase() !== 'authorization') {
+        out[k] = v; 
+      }
+    });
+    return { ...out, ...base }; // base overrides extra
   }
   if (Array.isArray(extra)) {
-    const out: Record<string, string> = { ...base };
-    for (const [k, v] of extra) out[String(k)] = String(v);
-    return out;
+    const out: Record<string, string> = {};
+    for (const [k, v] of extra) {
+      if (String(k).toLowerCase() !== 'authorization') {
+        out[String(k)] = String(v);
+      }
+    }
+    return { ...out, ...base }; // base overrides extra
   }
-  return { ...base, ...(extra as any) };
+  // Plain object or object without prototype
+  if (typeof extra === 'object' && extra !== null) {
+    const out: Record<string, string> = {};
+    for (const k of Object.keys(extra)) {
+      if (k.toLowerCase() !== 'authorization') {
+        out[k] = String((extra as Record<string, unknown>)[k]);
+      }
+    }
+    return { ...out, ...base }; // base overrides extra
+  }
+  // Plain object: filter out Authorization, then apply base
+  const extraObj = extra as Record<string, string>;
+  const filtered: Record<string, string> = {};
+  for (const [k, v] of Object.entries(extraObj)) {
+    if (k.toLowerCase() !== 'authorization') {
+      filtered[k] = v;
+    }
+  }
+  return { ...filtered, ...base }; // base overrides extra
 }
 
 export type AnalyzeResponse = {

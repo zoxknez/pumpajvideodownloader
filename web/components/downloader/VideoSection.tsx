@@ -271,6 +271,9 @@ export const VideoSection: React.FC<VideoSectionProps> = ({ analysisData, onForm
         if (!resp?.ok) {
           try { subRef.current?.close?.(); } catch {}
           setJobId(null); setJobProgress(0); setJobStage('');
+        } else {
+          // Notify parent to switch to Downloading tab
+          onDownloadStart?.();
         }
       }
     } catch {}

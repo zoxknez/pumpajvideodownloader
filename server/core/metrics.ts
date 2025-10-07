@@ -17,8 +17,15 @@ export type ProxyMetrics = {
   errors: Map<string, number>;
 };
 
+export type ReaperMetrics = {
+  filesReaped: number;
+  jobsDeleted: number;
+  lastRunTimestamp: number;
+};
+
 export type MetricsRegistry = {
   proxy: ProxyMetrics;
+  reaper: ReaperMetrics;
 };
 
 function createHistogram(bounds: number[]): HistogramBuckets {
@@ -54,6 +61,11 @@ export function createMetricsRegistry(): MetricsRegistry {
       duration: createHistogram([0.5, 1, 2.5, 5, 10, 30, 60]),
       size: createHistogram([0.5 * MB, 1 * MB, 5 * MB, 10 * MB, 50 * MB, 200 * MB, 500 * MB]),
       errors: new Map(),
+    },
+    reaper: {
+      filesReaped: 0,
+      jobsDeleted: 0,
+      lastRunTimestamp: 0,
     },
   };
 }
@@ -95,6 +107,7 @@ export function resetMetrics(registry: MetricsRegistry) {
   registry.proxy.errors.clear();
   resetHistogram(registry.proxy.duration);
   resetHistogram(registry.proxy.size);
+  // Note: reaper metrics are cumulative (not reset)
 }
 
 function resetHistogram(hist: HistogramBuckets) {

@@ -21,7 +21,7 @@ const AboutView = dynamic(() => import('@/components/AboutView'), { ssr: false }
 import { analyzeUrl } from '@/lib/api-desktop';
 import { useAuth } from '@/components/AuthProvider';
 
-type MainTab = 'download' | 'queue' | 'history' | 'settings' | 'about';
+type MainTab = 'analyze' | 'downloading' | 'history' | 'settings' | 'about';
 
 export default function DesktopApp() {
   const [url, setUrl] = useState('');
@@ -29,7 +29,7 @@ export default function DesktopApp() {
   const [isAnalyzed, setIsAnalyzed] = useState(false);
   const [analysisJson, setAnalysisJson] = useState<any | null>(null);
   const [errorMsg, setErrorMsg] = useState<string>('');
-  const [activeMainTab, setActiveMainTab] = useState<MainTab>('download');
+  const [activeMainTab, setActiveMainTab] = useState<MainTab>('analyze');
   const [apiOnline, setApiOnline] = useState<boolean | null>(null);
   const [showInfoModal, setShowInfoModal] = useState(false);
   const urlInputRef = useRef<HTMLInputElement | null>(null);
@@ -43,7 +43,7 @@ export default function DesktopApp() {
       const savedUrl = localStorage.getItem('app:url');
       const savedTab = localStorage.getItem('app:activeTab') as MainTab | null;
       if (savedUrl) setUrl(savedUrl);
-      if (savedTab && ['download','queue','history','settings','about'].includes(savedTab)) {
+      if (savedTab && ['analyze','downloading','history','settings','about'].includes(savedTab)) {
         setActiveMainTab(savedTab);
       }
     } catch {}
@@ -84,8 +84,8 @@ export default function DesktopApp() {
         const key = e.key;
         if (key >= '1' && key <= '5') {
           const map: Record<string, MainTab> = { 
-            '1': 'download', 
-            '2': 'queue', 
+            '1': 'analyze', 
+            '2': 'downloading', 
             '3': 'settings', 
             '4': 'history', 
             '5': 'about' 
@@ -99,9 +99,9 @@ export default function DesktopApp() {
         }
       }
       
-      // Enter to Analyze when on Download tab
+      // Enter to Analyze when on Analyze tab
       if (!e.ctrlKey && !e.altKey && !e.metaKey && e.key === 'Enter') {
-        if (activeMainTab === 'download' && !isAnalyzing && url.trim()) {
+        if (activeMainTab === 'analyze' && !isAnalyzing && url.trim()) {
           if (!isInputLike || (tag === 'input')) {
             e.preventDefault();
             handleAnalyze();
@@ -346,26 +346,26 @@ export default function DesktopApp() {
                   <div className="relative bg-white/5 backdrop-blur-md rounded-t-2xl rounded-b-xl p-2 border border-white/10 border-b-0">
                     <div className="grid grid-cols-5 gap-2 w-full">
                       <button
-                        onClick={() => setActiveMainTab('download')}
+                        onClick={() => setActiveMainTab('analyze')}
                         className={`flex items-center justify-center gap-2 px-6 py-3 rounded-xl font-medium transition-all duration-300 ${
-                          activeMainTab === 'download'
+                          activeMainTab === 'analyze'
                             ? 'bg-gradient-to-r from-blue-600 to-purple-600 text-white shadow-lg shadow-blue-500/25'
                             : 'text-white/60 hover:text-white hover:bg-white/10'
                         }`}
                       >
-                        <Monitor className="w-5 h-5" />
-                        Download
+                        <Search className="w-5 h-5" />
+                        Analyze
                       </button>
                       <button
-                        onClick={() => setActiveMainTab('queue')}
+                        onClick={() => setActiveMainTab('downloading')}
                         className={`flex items-center justify-center gap-2 px-6 py-3 rounded-xl font-medium transition-all duration-300 ${
-                          activeMainTab === 'queue'
+                          activeMainTab === 'downloading'
                             ? 'bg-gradient-to-r from-indigo-600 to-fuchsia-600 text-white shadow-lg shadow-indigo-500/25'
                             : 'text-white/60 hover:text-white hover:bg-white/10'
                         }`}
                       >
-                        <Clock className="w-5 h-5" />
-                        Queue
+                        <Download className="w-5 h-5" />
+                        Downloading
                       </button>
                       <button
                         onClick={() => setActiveMainTab('settings')}
@@ -407,28 +407,29 @@ export default function DesktopApp() {
 
               {/* Tab Content */}
               <div className="animate-in slide-in-from-bottom-4 duration-700">
-                {activeMainTab === 'download' && !isAnalyzed && (
+                {activeMainTab === 'analyze' && !isAnalyzed && (
                   <div className="relative">
                     <div className="absolute inset-0 rounded-2xl blur-xl wave-bg" />
                     <div className="relative bg-white/5 backdrop-blur-md rounded-b-2xl rounded-t-xl p-6 border border-white/10 border-t-0 min-h-[calc(100vh-360px)]">
                       <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-4 gap-6">
                         <ThumbnailSection />
-                        <VideoSection onDownloadStart={() => setActiveMainTab('queue')} />
-                        <AudioSection onDownloadStart={() => setActiveMainTab('queue')} />
+                        <VideoSection onDownloadStart={() => setActiveMainTab('downloading')} />
+                        <AudioSection onDownloadStart={() => setActiveMainTab('downloading')} />
                         <OptionsSection />
                       </div>
                     </div>
                   </div>
                 )}
 
-                {activeMainTab === 'download' && isAnalyzed && analysisJson && (
+                {activeMainTab === 'analyze' && isAnalyzed && analysisJson && (
                   <div className="relative">
                     <div className="absolute inset-0 rounded-2xl blur-xl wave-bg" />
                     <div className="relative bg-white/5 backdrop-blur-md rounded-b-2xl rounded-t-xl p-6 border border-white/10 border-t-0 min-h-[calc(100vh-360px)]">
                       <AnalysisResults 
                         onBack={() => setIsAnalyzed(false)} 
                         analyzedUrl={url} 
-                        json={analysisJson} 
+                        json={analysisJson}
+                        onDownloadStart={() => setActiveMainTab('downloading')}
                       />
                     </div>
                   </div>
@@ -443,7 +444,7 @@ export default function DesktopApp() {
                   </div>
                 )}
 
-                {activeMainTab === 'queue' && (
+                {activeMainTab === 'downloading' && (
                   <div className="relative">
                     <div className="absolute inset-0 rounded-2xl blur-xl wave-bg" />
                     <div className="relative bg-white/5 backdrop-blur-md rounded-b-2xl rounded-t-xl p-6 border border-white/10 border-t-0 min-h-[calc(100vh-360px)]">

@@ -4,8 +4,8 @@ import { usePathname } from 'next/navigation';
 import React, { useState } from 'react';
 
 const tabs = [
-  { href: '/', label: 'Download' },
-  { href: '/queue', label: 'Queue' },
+  { href: '/', label: 'Analyze' },
+  { href: '/downloading', label: 'Downloading' },
   { href: '/history', label: 'History' },
   { href: '/batch', label: 'Batch' },
   { href: '/settings', label: 'Settings' },

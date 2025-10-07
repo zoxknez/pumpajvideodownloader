@@ -8,7 +8,7 @@ import { LoginGate } from '@/components/AuthProvider';
 
 const QueueView = dynamic(() => import('@/components/QueueView'), { ssr: false });
 
-export default function QueuePage() {
+export default function DownloadingPage() {
   return (
     <LoginGate>
       <AppHeader />

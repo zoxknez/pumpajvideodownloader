@@ -9,9 +9,10 @@ interface AnalysisResultsProps {
   onBack: () => void;
   analyzedUrl: string;
   json?: any; // optional real yt-dlp json
+  onDownloadStart?: () => void;
 }
 
-export const AnalysisResults: React.FC<AnalysisResultsProps> = ({ onBack, analyzedUrl, json }) => {
+export const AnalysisResults: React.FC<AnalysisResultsProps> = ({ onBack, analyzedUrl, json, onDownloadStart }) => {
   // No tabs: render all four sections like GUI 1 (pre-analysis) style
   // Prepare mapped data from real yt-dlp json when provided
   const videoMapped = useMemo(() => (json ? mapToVideoAnalysis(json) : null), [json]);
@@ -98,10 +99,16 @@ export const AnalysisResults: React.FC<AnalysisResultsProps> = ({ onBack, analyz
   {/* Three side-by-side sections: Video, Audio, Advance options */}
   <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-6 max-w-[1400px] mx-auto">
           <div className="animate-fade-in-up" style={{ animationDelay: '40ms' }}>
-            <VideoSection analysisData={videoMapped ? { ...videoMapped, sourceUrl: analyzedUrl, hasThumbnails: Boolean((thumbsMapped?.thumbnails || []).length) } : undefined} />
+            <VideoSection 
+              analysisData={videoMapped ? { ...videoMapped, sourceUrl: analyzedUrl, hasThumbnails: Boolean((thumbsMapped?.thumbnails || []).length) } : undefined} 
+              onDownloadStart={onDownloadStart}
+            />
           </div>
           <div className="animate-fade-in-up" style={{ animationDelay: '120ms' }}>
-            <AudioSection analysisData={audioMapped ? { ...audioMapped, sourceUrl: analyzedUrl } : undefined} />
+            <AudioSection 
+              analysisData={audioMapped ? { ...audioMapped, sourceUrl: analyzedUrl } : undefined}
+              onDownloadStart={onDownloadStart}
+            />
           </div>
       <div className="animate-fade-in-up" style={{ animationDelay: '200ms' }}>
             <AdvancedOptionsSection

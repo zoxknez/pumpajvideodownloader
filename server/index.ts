@@ -341,6 +341,39 @@ function coerceAudioFormat(input: unknown, fallback = DEFAULT_AUDIO_FORMAT): str
   return AUDIO_FORMAT_ALIASES.get(trimmed) ?? null;
 }
 
+/**
+ * Returns video format selector based on FFmpeg availability and policy.
+ * FFmpeg-free mode: progressive streams only (typically up to 720p on YouTube).
+ * FFmpeg mode: adaptive merge (best video + best audio).
+ */
+function selectVideoFormat(policy: { maxHeight: number }): string {
+  const ffmpegEnabled = process.env.ENABLE_FFMPEG !== 'false';
+  if (ffmpegEnabled) {
+    // Adaptive streams: merge best video + audio (requires FFmpeg)
+    return `bv*[height<=?${policy.maxHeight}]+ba/b[height<=?${policy.maxHeight}]`;
+  } else {
+    // Progressive streams only: pre-muxed video+audio container
+    // Fallback chain: exact height match → any progressive with both codecs → best available
+    return `b[height<=?${policy.maxHeight}][vcodec!=none][acodec!=none]/b[acodec!=none][vcodec!=none]/best[height<=?${policy.maxHeight}]`;
+  }
+}
+
+/**
+ * Returns audio format options based on FFmpeg availability.
+ * FFmpeg-free mode: direct stream (bestaudio[ext=m4a]/bestaudio/best).
+ * FFmpeg mode: extract and convert to target format.
+ */
+function selectAudioFormat(targetFormat: string): { format?: string; extractAudio?: boolean; audioFormat?: string } {
+  const ffmpegEnabled = process.env.ENABLE_FFMPEG !== 'false';
+  if (ffmpegEnabled) {
+    // Extract and convert audio (requires FFmpeg)
+    return { extractAudio: true, audioFormat: targetFormat };
+  } else {
+    // Direct audio stream, prefer m4a container
+    return { format: 'bestaudio[ext=m4a]/bestaudio/best' };
+  }
+}
+
 function trapChildPromise(child: any, label: string) {
   if (child && typeof child.catch === 'function') {
     child.catch((err: any) => {
@@ -462,6 +495,7 @@ type FinalizeJobOptions = {
   keepJob?: boolean;
   keepFiles?: boolean;
   removeListeners?: boolean;
+  reason?: 'ok' | 'revoked' | 'timeout' | 'error' | 'user_cancel';
   extra?: Record<string, unknown>;
 };
 
@@ -471,12 +505,13 @@ function finalizeJob(id: string, status: JobTerminalStatus, options: FinalizeJob
     keepJob = status === 'completed',
     keepFiles = status === 'completed',
     removeListeners = true,
+    reason = status === 'completed' ? 'ok' : status === 'canceled' ? 'user_cancel' : 'error',
     extra,
   } = options;
 
   try { clearHistoryThrottle(id); } catch {}
 
-  pushSse(id, { id, status, ...(extra || {}) }, 'end');
+  pushSse(id, { id, status, reason, ...(extra || {}) }, 'end');
 
   if (removeListeners) {
     const set = sseListeners.get(id);
@@ -489,6 +524,12 @@ function finalizeJob(id: string, status: JobTerminalStatus, options: FinalizeJob
         try { sseListeners.delete(id); } catch {}
       }
     }
+  }
+
+  // Bump job version to invalidate all signed tokens (download/progress URLs)
+  // This ensures that completed/failed/canceled jobs cannot be accessed with old tokens
+  if (job) {
+    try { bumpJobVersion(job); } catch {}
   }
 
   if (!keepFiles && job) {
@@ -947,10 +988,7 @@ app.get('/api/download/best', requireAuth as any, async (req: any, res) => {
     const child = (ytdlp as any).exec(
       sourceUrl,
       {
-        // FFmpeg-free mode: progressive streams only (typically up to 720p on YouTube)
-        format: process.env.ENABLE_FFMPEG === 'false'
-          ? `b[height<=?${policy.maxHeight}][vcodec!=none][acodec!=none]/best[height<=?${policy.maxHeight}]`
-          : `bv*[height<=?${policy.maxHeight}]+ba/b[height<=?${policy.maxHeight}]`,
+        format: selectVideoFormat(policy),
         output: outPath,
         addHeader: makeHeaders(sourceUrl),
         restrictFilenames: true,
@@ -1075,10 +1113,7 @@ app.get('/api/download/audio', requireAuth as any, async (req: any, res) => {
     const child = (ytdlp as any).exec(
       sourceUrl,
       {
-        // FFmpeg-free mode: use native audio stream instead of conversion
-        ...(process.env.ENABLE_FFMPEG === 'false'
-          ? { format: 'bestaudio[ext=m4a]/bestaudio/best' }
-          : { extractAudio: true, audioFormat: fmt }),
+        ...selectAudioFormat(fmt),
         output: outPath,
         addHeader: makeHeaders(sourceUrl),
         restrictFilenames: true,
@@ -1204,9 +1239,7 @@ app.get('/api/download/chapter', requireAuth as any, async (req: any, res) => {
     const child = (ytdlp as any).exec(
       sourceUrl,
       {
-        format: process.env.ENABLE_FFMPEG === 'false'
-          ? `b[height<=?${policy.maxHeight}][vcodec!=none][acodec!=none]/best[height<=?${policy.maxHeight}]`
-          : `bv*[height<=?${policy.maxHeight}]+ba/b[height<=?${policy.maxHeight}]`,
+        format: selectVideoFormat(policy),
         output: outPath,
         addHeader: makeHeaders(sourceUrl),
         noCheckCertificates: true,
@@ -1292,9 +1325,7 @@ app.post('/api/job/start/best', requireAuth as any, async (req: any, res: Respon
       const child = (ytdlp as any).exec(
         sourceUrl,
         {
-          format: process.env.ENABLE_FFMPEG === 'false'
-            ? `b[height<=?${policy.maxHeight}][vcodec!=none][acodec!=none]/best[height<=?${policy.maxHeight}]`
-            : `bv*[height<=?${policy.maxHeight}]+ba/b[height<=?${policy.maxHeight}]`,
+          format: selectVideoFormat(policy),
           output: outPath,
           addHeader: makeHeaders(sourceUrl),
           restrictFilenames: true,
@@ -1409,9 +1440,7 @@ app.post('/api/job/start/audio', requireAuth as any, async (req: any, res: Respo
       const child = (ytdlp as any).exec(
         sourceUrl,
         {
-          ...(process.env.ENABLE_FFMPEG === 'false'
-            ? { format: 'bestaudio[ext=m4a]/bestaudio/best' }
-            : { extractAudio: true, audioFormat: fmt }),
+          ...selectAudioFormat(fmt),
           output: outPath,
           addHeader: makeHeaders(sourceUrl),
           restrictFilenames: true,
@@ -1525,9 +1554,7 @@ app.post('/api/job/start/clip', requireAuth as any, async (req: any, res: Respon
       log.info('job_spawn_clip', `url=${sourceUrl} ${section} user=${requestUser.id}`);
       const policy = policyAtQueue;
       const child = (ytdlp as any).exec(sourceUrl, {
-        format: process.env.ENABLE_FFMPEG === 'false'
-          ? `b[height<=?${policy.maxHeight}][vcodec!=none][acodec!=none]/best[height<=?${policy.maxHeight}]`
-          : `bv*[height<=?${policy.maxHeight}]+ba/b[height<=?${policy.maxHeight}]`,
+        format: selectVideoFormat(policy),
         output: outPath,
         addHeader: makeHeaders(sourceUrl),
         noCheckCertificates: true,
@@ -1736,9 +1763,7 @@ app.post('/api/job/start/convert', requireAuth as any, async (req: any, res: Res
       const child = (ytdlp as any).exec(
         sourceUrl,
         {
-          format: process.env.ENABLE_FFMPEG === 'false'
-            ? `b[height<=?${policy.maxHeight}][vcodec!=none][acodec!=none]/best[height<=?${policy.maxHeight}]`
-            : `bv*[height<=?${policy.maxHeight}]+ba/b[height<=?${policy.maxHeight}]`,
+          format: selectVideoFormat(policy),
           output: outPath,
           addHeader: makeHeaders(sourceUrl),
           restrictFilenames: true,
@@ -1881,9 +1906,7 @@ app.post('/api/batch', batchRateLimit, requireAuth as any, async (req: any, res)
           child = (ytdlp as any).exec(
             u,
             { 
-              ...(process.env.ENABLE_FFMPEG === 'false'
-                ? { format: 'bestaudio[ext=m4a]/bestaudio/best' }
-                : { extractAudio: true, audioFormat: audioFmt }),
+              ...selectAudioFormat(audioFmt),
               ...commonArgs 
             },
             { env: cleanedChildEnv(process.env) }
@@ -1892,9 +1915,7 @@ app.post('/api/batch', batchRateLimit, requireAuth as any, async (req: any, res)
           child = (ytdlp as any).exec(
             u,
             { 
-              format: process.env.ENABLE_FFMPEG === 'false'
-                ? `b[height<=?${policyCur.maxHeight}][vcodec!=none][acodec!=none]/best[height<=?${policyCur.maxHeight}]`
-                : `bv*[height<=?${policyCur.maxHeight}]+ba/b[height<=?${policyCur.maxHeight}]`,
+              format: selectVideoFormat(policyCur),
               ...commonArgs 
             },
             { env: cleanedChildEnv(process.env) }
@@ -2343,17 +2364,27 @@ const REAPER_MS = 10 * 60 * 1000; // 10m
 if (process.env.NODE_ENV !== 'test') {
   setInterval(() => {
     try {
+      metrics.reaper.lastRunTimestamp = Math.floor(Date.now() / 1000);
       for (const job of jobs.values()) {
         if (!job.produced) continue;
         const full = path.join(job.tmpDir, job.produced);
         if (fs.existsSync(full)) {
           const age = Date.now() - fs.statSync(full).mtimeMs;
           if (age > REAPER_MS) {
-            try { fs.unlinkSync(full); } catch {}
-            try { jobs.delete(job.id); } catch {}
+            try { 
+              fs.unlinkSync(full); 
+              metrics.reaper.filesReaped += 1;
+            } catch {}
+            try { 
+              jobs.delete(job.id); 
+              metrics.reaper.jobsDeleted += 1;
+            } catch {}
           }
         } else {
-          try { jobs.delete(job.id); } catch {}
+          try { 
+            jobs.delete(job.id); 
+            metrics.reaper.jobsDeleted += 1;
+          } catch {}
         }
       }
     } catch {}
