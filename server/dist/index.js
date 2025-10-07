@@ -457,6 +457,11 @@ function finalizeJob(id, status, options = {}) {
         }
         catch { }
     }
+    // Clean up SSE ring buffer to prevent memory leak
+    try {
+        sseBuffers.delete(id);
+    }
+    catch { }
     try {
         running.delete(id);
     }
@@ -860,7 +865,8 @@ const keyer = (req) => {
     return resolveClientIp(req);
 };
 const dlLimiter = rateLimit({ windowMs: 60000, max: 20, keyGenerator: keyer });
-app.use(['/api/download', '/api/job'], requireAuth, dlLimiter);
+// Only apply blanket auth to /api/download, not /api/job (job routes use per-route auth or signed URLs)
+app.use('/api/download', requireAuth, dlLimiter);
 // ========================
 // get-url (-g)
 // ========================
@@ -869,6 +875,11 @@ app.post('/api/get-url', requireAuth, async (req, res, next) => {
         const { url, formatId } = req.body;
         if (!url || !formatId || !isUrlAllowed(url, cfg)) {
             return res.status(400).json({ error: 'missing_or_invalid_params' });
+        }
+        // Security: validate formatId to prevent injection attacks
+        const FORMAT_ID_RE = /^[0-9a-zA-Z+*/.\-]{1,32}$/;
+        if (!FORMAT_ID_RE.test(formatId)) {
+            return res.status(400).json({ error: 'invalid_format_id' });
         }
         await assertPublicHttpHost(url);
         const output = await ytdlp(url, {
@@ -914,7 +925,10 @@ app.get('/api/download/best', requireAuth, async (req, res) => {
         emitProgress(hist.id, { progress: 0, stage: 'starting' });
         let stream = null;
         const child = ytdlp.exec(sourceUrl, {
-            format: `bv*[height<=?${policy.maxHeight}]+ba/b[height<=?${policy.maxHeight}]`,
+            // FFmpeg-free mode: progressive streams only (typically up to 720p on YouTube)
+            format: process.env.ENABLE_FFMPEG === 'false'
+                ? `b[height<=?${policy.maxHeight}][vcodec!=none][acodec!=none]/best[height<=?${policy.maxHeight}]`
+                : `bv*[height<=?${policy.maxHeight}]+ba/b[height<=?${policy.maxHeight}]`,
             output: outPath,
             addHeader: makeHeaders(sourceUrl),
             restrictFilenames: true,
@@ -1065,8 +1079,10 @@ app.get('/api/download/audio', requireAuth, async (req, res) => {
         emitProgress(hist.id, { progress: 0, stage: 'starting' });
         let stream = null;
         const child = ytdlp.exec(sourceUrl, {
-            extractAudio: true,
-            audioFormat: fmt,
+            // FFmpeg-free mode: use native audio stream instead of conversion
+            ...(process.env.ENABLE_FFMPEG === 'false'
+                ? { format: 'bestaudio[ext=m4a]/bestaudio/best' }
+                : { extractAudio: true, audioFormat: fmt }),
             output: outPath,
             addHeader: makeHeaders(sourceUrl),
             restrictFilenames: true,
@@ -1215,7 +1231,9 @@ app.get('/api/download/chapter', requireAuth, async (req, res) => {
         const outPath = path.join(tmp, `${id}.%(ext)s`);
         const section = `${Math.max(0, start)}-${end}`;
         const child = ytdlp.exec(sourceUrl, {
-            format: `bv*[height<=?${policy.maxHeight}]+ba/b[height<=?${policy.maxHeight}]`,
+            format: process.env.ENABLE_FFMPEG === 'false'
+                ? `b[height<=?${policy.maxHeight}][vcodec!=none][acodec!=none]/best[height<=?${policy.maxHeight}]`
+                : `bv*[height<=?${policy.maxHeight}]+ba/b[height<=?${policy.maxHeight}]`,
             output: outPath,
             addHeader: makeHeaders(sourceUrl),
             noCheckCertificates: true,
@@ -1299,7 +1317,9 @@ app.post('/api/job/start/best', requireAuth, async (req, res) => {
             log.info('job_spawn_best', `url=${sourceUrl} user=${requestUser.id}`);
             const policy = policyAtQueue;
             const child = ytdlp.exec(sourceUrl, {
-                format: `bv*[height<=?${policy.maxHeight}]+ba/b[height<=?${policy.maxHeight}]`,
+                format: process.env.ENABLE_FFMPEG === 'false'
+                    ? `b[height<=?${policy.maxHeight}][vcodec!=none][acodec!=none]/best[height<=?${policy.maxHeight}]`
+                    : `bv*[height<=?${policy.maxHeight}]+ba/b[height<=?${policy.maxHeight}]`,
                 output: outPath,
                 addHeader: makeHeaders(sourceUrl),
                 restrictFilenames: true,
@@ -1417,8 +1437,9 @@ app.post('/api/job/start/audio', requireAuth, async (req, res) => {
             log.info('job_spawn_audio', `url=${sourceUrl} fmt=${fmt} user=${requestUser.id}`);
             const policy = policyAtQueue;
             const child = ytdlp.exec(sourceUrl, {
-                extractAudio: true,
-                audioFormat: fmt,
+                ...(process.env.ENABLE_FFMPEG === 'false'
+                    ? { format: 'bestaudio[ext=m4a]/bestaudio/best' }
+                    : { extractAudio: true, audioFormat: fmt }),
                 output: outPath,
                 addHeader: makeHeaders(sourceUrl),
                 restrictFilenames: true,
@@ -1538,7 +1559,9 @@ app.post('/api/job/start/clip', requireAuth, async (req, res) => {
             log.info('job_spawn_clip', `url=${sourceUrl} ${section} user=${requestUser.id}`);
             const policy = policyAtQueue;
             const child = ytdlp.exec(sourceUrl, {
-                format: `bv*[height<=?${policy.maxHeight}]+ba/b[height<=?${policy.maxHeight}]`,
+                format: process.env.ENABLE_FFMPEG === 'false'
+                    ? `b[height<=?${policy.maxHeight}][vcodec!=none][acodec!=none]/best[height<=?${policy.maxHeight}]`
+                    : `bv*[height<=?${policy.maxHeight}]+ba/b[height<=?${policy.maxHeight}]`,
                 output: outPath,
                 addHeader: makeHeaders(sourceUrl),
                 noCheckCertificates: true,
@@ -1760,7 +1783,9 @@ app.post('/api/job/start/convert', requireAuth, async (req, res) => {
             log.info('job_spawn_convert', `url=${sourceUrl} container=${mergeOut} user=${requestUser.id}`);
             const policy = policyAtQueue;
             const child = ytdlp.exec(sourceUrl, {
-                format: `bv*[height<=?${policy.maxHeight}]+ba/b[height<=?${policy.maxHeight}]`,
+                format: process.env.ENABLE_FFMPEG === 'false'
+                    ? `b[height<=?${policy.maxHeight}][vcodec!=none][acodec!=none]/best[height<=?${policy.maxHeight}]`
+                    : `bv*[height<=?${policy.maxHeight}]+ba/b[height<=?${policy.maxHeight}]`,
                 output: outPath,
                 addHeader: makeHeaders(sourceUrl),
                 restrictFilenames: true,
@@ -1909,10 +1934,20 @@ app.post('/api/batch', batchRateLimit, requireAuth, async (req, res) => {
                 };
                 let child;
                 if (mode === 'audio' && audioFmt) {
-                    child = ytdlp.exec(u, { extractAudio: true, audioFormat: audioFmt, ...commonArgs }, { env: cleanedChildEnv(process.env) });
+                    child = ytdlp.exec(u, {
+                        ...(process.env.ENABLE_FFMPEG === 'false'
+                            ? { format: 'bestaudio[ext=m4a]/bestaudio/best' }
+                            : { extractAudio: true, audioFormat: audioFmt }),
+                        ...commonArgs
+                    }, { env: cleanedChildEnv(process.env) });
                 }
                 else {
-                    child = ytdlp.exec(u, { format: `bv*[height<=?${policyCur.maxHeight}]+ba/b[height<=?${policyCur.maxHeight}]`, ...commonArgs }, { env: cleanedChildEnv(process.env) });
+                    child = ytdlp.exec(u, {
+                        format: process.env.ENABLE_FFMPEG === 'false'
+                            ? `b[height<=?${policyCur.maxHeight}][vcodec!=none][acodec!=none]/best[height<=?${policyCur.maxHeight}]`
+                            : `bv*[height<=?${policyCur.maxHeight}]+ba/b[height<=?${policyCur.maxHeight}]`,
+                        ...commonArgs
+                    }, { env: cleanedChildEnv(process.env) });
                 }
                 job.child = child;
                 trapChildPromise(child, mode === 'audio' ? 'yt_dlp_unhandled_batch_audio' : 'yt_dlp_unhandled_batch_video');
@@ -2243,6 +2278,16 @@ app.get('/api/job/file/:id', requireAuthOrSigned('download'), jobBucket, (req, r
                     res.on('close', ender);
                     res.on('aborted', ender);
                     stream.pipe(res);
+                    // Finalize job only if complete file was delivered (0..size-1)
+                    stream.on('close', () => {
+                        if (start === 0 && end === stat.size - 1) {
+                            try {
+                                fs.unlinkSync(full);
+                            }
+                            catch { }
+                            finalizeJob(id, 'completed', { job, keepJob: false, keepFiles: false });
+                        }
+                    });
                     return;
                 }
             }
