@@ -28,6 +28,7 @@ export const VideoSection: React.FC<VideoSectionProps> = ({ analysisData, onForm
     startBestDownload,
     startPresetDownload,
     saveReadyFile,
+    openInNewTab,
     dismissReady,
     cancelActiveJob,
     clearError,
@@ -102,6 +103,7 @@ export const VideoSection: React.FC<VideoSectionProps> = ({ analysisData, onForm
             downloadReady={downloadReady}
             isSaving={isSaving}
             onSave={saveReadyFile}
+            onOpenInTab={openInNewTab}
             onDismiss={dismissReady}
           />
 

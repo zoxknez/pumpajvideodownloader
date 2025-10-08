@@ -68,6 +68,7 @@ export type DownloadReadyPanelProps = {
   downloadReady: boolean;
   isSaving: boolean;
   onSave: () => void;
+  onOpenInTab: () => void;
   onDismiss: () => void;
 };
 
@@ -76,6 +77,7 @@ export const DownloadReadyPanel: React.FC<DownloadReadyPanelProps> = ({
   downloadReady,
   isSaving,
   onSave,
+  onOpenInTab,
   onDismiss,
 }) => {
   if (!downloadReady || !readyJobId) return null;
@@ -87,9 +89,15 @@ export const DownloadReadyPanel: React.FC<DownloadReadyPanelProps> = ({
         <span className="text-xs uppercase tracking-wide opacity-80">Awaiting save</span>
       </div>
       <p className="text-xs text-blue-100/80">
-        Choose where to save the merged file. We'll keep it available for a few minutes.
+        Open in new tab to play/preview, or save directly to your device.
       </p>
       <div className="flex flex-wrap gap-2">
+        <button
+          onClick={onOpenInTab}
+          className="rounded-lg border border-white/10 bg-gradient-to-r from-emerald-500 to-green-500 px-4 py-2 text-sm font-medium text-white transition hover:scale-[1.02] hover:shadow-lg"
+        >
+          Open in new tab
+        </button>
         <button
           onClick={onSave}
           disabled={isSaving}

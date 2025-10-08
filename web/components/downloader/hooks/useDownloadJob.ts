@@ -340,6 +340,19 @@ export const useDownloadJob = ({ analysisData, selectedFormat, onDownloadStart, 
     }
   }, [info, readyJobId, resetTrackingFlags, toastError]);
 
+  const openInNewTab = useCallback(async () => {
+    if (!readyJobId) return;
+    try {
+      const { getAuthenticatedUrl } = await import('@/lib/api-desktop');
+      const url = await getAuthenticatedUrl(`/api/job/file/${readyJobId}`);
+      window.open(url, '_blank');
+      info('Opened in new tab. You can play or right-click to "Save as..."');
+    } catch (err) {
+      console.error('Failed to open in new tab', err);
+      toastError('Failed to open file in new tab.');
+    }
+  }, [info, readyJobId, toastError]);
+
   const dismissReady = useCallback(() => {
     resetTrackingFlags(true);
     setJobStatus('idle');
@@ -495,6 +508,7 @@ export const useDownloadJob = ({ analysisData, selectedFormat, onDownloadStart, 
     startBestDownload,
     startPresetDownload,
     saveReadyFile,
+    openInNewTab,
     dismissReady,
     cancelActiveJob,
     clearError,

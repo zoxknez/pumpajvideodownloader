@@ -26,6 +26,34 @@ export function parseFilename(res: Response, fallback: string) {
   );
 }
 
+/**
+ * Generate a URL with auth token for direct browser access (open in new tab)
+ */
+export async function getAuthenticatedUrl(path: string): Promise<string> {
+  const url = new URL(`${API_BASE}${path.startsWith('/') ? path : `/${path}`}`);
+  
+  // Add auth token to query params
+  const { getSupabase } = await import('../supabaseClient');
+  const supabase = getSupabase();
+  if (supabase) {
+    try {
+      const { data } = await supabase.auth.getSession();
+      const token = data.session?.access_token;
+      if (token) {
+        url.searchParams.set('token', token);
+      }
+    } catch {
+      // Fallback to localStorage token
+      if (typeof window !== 'undefined') {
+        const token = window.localStorage?.getItem('app:token');
+        if (token) url.searchParams.set('token', token);
+      }
+    }
+  }
+  
+  return url.toString();
+}
+
 export async function proxyDownload(options: {
   url: string;
   filename: string;

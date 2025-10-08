@@ -20,6 +20,7 @@ export type { AnalyzeResponse } from './analysis';
 
 export {
   downloadJobFile,
+  getAuthenticatedUrl,
   parseFilename,
   proxyDownload,
   resolveFormatUrl,
