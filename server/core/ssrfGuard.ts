@@ -42,12 +42,49 @@ function mkErr(status: number, code: string, message: string) {
   return e;
 }
 
+// Whitelist of trusted domains that skip SSRF checks
+const TRUSTED_DOMAINS = new Set([
+  'youtube.com',
+  'www.youtube.com',
+  'youtu.be',
+  'm.youtube.com',
+  'music.youtube.com',
+  'googlevideo.com',
+  'twitter.com',
+  'x.com',
+  'twimg.com',
+  'facebook.com',
+  'fbcdn.net',
+  'instagram.com',
+  'cdninstagram.com',
+  'tiktok.com',
+  'tiktokcdn.com',
+  'vimeo.com',
+  'dailymotion.com',
+  'soundcloud.com',
+  'sndcdn.com',
+  'twitch.tv',
+]);
+
 export async function assertPublicHttpHost(rawUrl: string) {
   const u = new URL(rawUrl);
   if (!/^https?:$/.test(u.protocol)) throw mkErr(400, 'SSRF_FORBIDDEN', 'Only http/https');
   const hostAscii = domainToASCII((u.hostname || '').replace(/\.+$/, ''));
   const hostname = hostAscii.toLowerCase();
   if (!hostname) throw mkErr(400, 'SSRF_FORBIDDEN', 'Invalid host');
+
+  // Skip SSRF checks for trusted domains
+  if (TRUSTED_DOMAINS.has(hostname)) {
+    return; // Trusted domain - no SSRF check needed
+  }
+  
+  // Also check if it's a subdomain of trusted domain
+  const isTrustedSubdomain = Array.from(TRUSTED_DOMAINS).some(trusted => 
+    hostname.endsWith(`.${trusted}`)
+  );
+  if (isTrustedSubdomain) {
+    return; // Trusted subdomain - no SSRF check needed
+  }
 
   const port = u.port ? Number(u.port) : u.protocol === 'https:' ? 443 : 80;
   if (!ALLOWED_PORTS.has(port)) throw mkErr(400, 'SSRF_FORBIDDEN', `port ${port} not allowed`);
