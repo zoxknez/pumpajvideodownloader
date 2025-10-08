@@ -65,6 +65,7 @@ export function setupDownloadRoutes(
   // ========================
   app.get('/api/download/best', requireAuth as any, async (req: Request, res: Response) => {
     const sourceUrl = (req.query.url as string) || '';
+    const requestUserId = String((req as any).user?.id || 'legacy');
     const title = (req.query.title as string) || 'video';
     if (!isUrlAllowed(sourceUrl, cfg)) return res.status(400).json({ error: 'invalid_url' });
     try {
@@ -92,7 +93,14 @@ export function setupDownloadRoutes(
     try {
       const policy = policyFor((req as any).user?.plan);
       log.info('download_best_start', sourceUrl);
-      const hist = appendHistory({ title, url: sourceUrl, type: 'video', format: 'MP4', status: 'in-progress' });
+      const hist = appendHistory({
+        userId: requestUserId,
+        title,
+        url: sourceUrl,
+        type: 'video',
+        format: 'MP4',
+        status: 'in-progress',
+      });
       histId = hist.id;
       emitProgress(hist.id, { progress: 0, stage: 'starting' });
 
@@ -181,7 +189,13 @@ export function setupDownloadRoutes(
       const finalize = () => {
         if (aborted || completed) return;
         completed = true;
-        updateHistory(hist.id, { status: 'completed', progress: 100, size: `${Math.round(stat.size / 1024 / 1024)} MB` });
+        updateHistory(hist.id, {
+          status: 'completed',
+          progress: 100,
+          size: `${Math.round(stat.size / 1024 / 1024)} MB`,
+          sizeBytes: stat.size,
+          completedAt: new Date().toISOString(),
+        });
         emitProgress(hist.id, { progress: 100, stage: 'completed', size: stat.size });
         endSseFor(hist.id, 'completed');
       };
@@ -190,7 +204,11 @@ export function setupDownloadRoutes(
     } catch (err: any) {
       log.error('download_best_failed', err?.message || err);
       if (histId) {
-        updateHistory(histId, { status: 'failed' });
+        updateHistory(histId, {
+          status: 'failed',
+          completedAt: new Date().toISOString(),
+          error: String(err?.stderr || err?.message || err),
+        });
         emitProgress(histId, { stage: 'failed' });
         endSseFor(histId, 'failed');
       }
@@ -209,6 +227,7 @@ export function setupDownloadRoutes(
   // ========================
   app.get('/api/download/audio', requireAuth as any, async (req: Request, res: Response) => {
     const sourceUrl = (req.query.url as string) || '';
+    const requestUserId = String((req as any).user?.id || 'legacy');
     const title = (req.query.title as string) || 'audio';
     const fmt = coerceAudioFormat(req.query.format, DEFAULT_AUDIO_FORMAT);
     if (!fmt) return res.status(400).json({ error: 'invalid_format' });
@@ -238,7 +257,14 @@ export function setupDownloadRoutes(
     try {
       const policy = policyFor((req as any).user?.plan);
       log.info('download_audio_start', sourceUrl);
-      const hist = appendHistory({ title, url: sourceUrl, type: 'audio', format: fmt.toUpperCase(), status: 'in-progress' });
+      const hist = appendHistory({
+        userId: requestUserId,
+        title,
+        url: sourceUrl,
+        type: 'audio',
+        format: fmt.toUpperCase(),
+        status: 'in-progress',
+      });
       histId = hist.id;
       emitProgress(hist.id, { progress: 0, stage: 'starting' });
 
@@ -337,7 +363,13 @@ export function setupDownloadRoutes(
       const finalize = () => {
         if (aborted || completed) return;
         completed = true;
-        updateHistory(hist.id, { status: 'completed', progress: 100, size: `${Math.round(stat.size / 1024 / 1024)} MB` });
+        updateHistory(hist.id, {
+          status: 'completed',
+          progress: 100,
+          size: `${Math.round(stat.size / 1024 / 1024)} MB`,
+          sizeBytes: stat.size,
+          completedAt: new Date().toISOString(),
+        });
         emitProgress(hist.id, { progress: 100, stage: 'completed', size: stat.size });
         endSseFor(hist.id, 'completed');
       };
@@ -346,7 +378,11 @@ export function setupDownloadRoutes(
     } catch (err: any) {
       log.error('download_audio_failed', err?.message || err);
       if (histId) {
-        updateHistory(histId, { status: 'failed' });
+        updateHistory(histId, {
+          status: 'failed',
+          completedAt: new Date().toISOString(),
+          error: String(err?.stderr || err?.message || err),
+        });
         emitProgress(histId, { stage: 'failed' });
         endSseFor(histId, 'failed');
       }

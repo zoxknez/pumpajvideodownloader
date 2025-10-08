@@ -1,9 +1,10 @@
 'use client';
 
-import React, { useEffect, useState, useCallback } from 'react';
-import { Clock, Trash2, RefreshCw, Loader2, AlertCircle, CheckCircle, XCircle } from 'lucide-react';
+import React, { useEffect, useState, useCallback, useRef } from 'react';
+import { Clock, Trash2, RefreshCw, Loader2, AlertCircle, CheckCircle, XCircle, Download } from 'lucide-react';
 import { useToast } from './ToastProvider';
-import { getJSON, postJSON } from '@/lib/api';
+import { getJSON, postJSON, downloadJobFile } from '@/lib/api';
+import { subscribeJobProgress } from '@/lib/api-desktop';
 
 interface QueueJob {
   id: string;
@@ -22,32 +23,115 @@ interface QueueJob {
   createdAt: string;
 }
 
-interface SSEEvent {
-  type: string;
-  stage?: string;
-  progress?: number;
-  speed?: string;
-  eta?: string;
-  error?: string;
-  filename?: string;
-}
-
 export default function QueueView() {
   const { success, error: toastError } = useToast();
   const [jobs, setJobs] = useState<QueueJob[]>([]);
   const [loading, setLoading] = useState(true);
-  const [sseConnections] = useState<Map<string, EventSource>>(new Map());
+  const [readyJobs, setReadyJobs] = useState<Record<string, boolean>>({});
+  const [savedJobs, setSavedJobs] = useState<Record<string, boolean>>({});
+  const [savingJobId, setSavingJobId] = useState<string | null>(null);
+  const subsRef = useRef(new Map<string, { close: () => void }>());
+  const loadQueueRef = useRef<() => Promise<void> | void>(() => {});
+
+  const stageLabel = useCallback((stage?: string) => {
+    if (!stage) return 'processing';
+    return stage.replace(/_/g, ' ');
+  }, []);
+
+  const connectSSE = useCallback(async (jobId: string) => {
+    if (!jobId || subsRef.current.has(jobId)) return;
+    try {
+      const subscription = await subscribeJobProgress(
+        jobId,
+        (update) => {
+          setJobs((prev) => prev.map((job) => {
+            if (job.id !== jobId) return job;
+            return {
+              ...job,
+              stage: update.stage || job.stage,
+              progress: update.progress ?? job.progress,
+              speed: update.speed ?? job.speed,
+              eta: update.eta ?? job.eta,
+            };
+          }));
+        },
+        (status, detail) => {
+          const closer = subsRef.current.get(jobId);
+          closer?.close?.();
+          subsRef.current.delete(jobId);
+
+          setJobs((prev) => prev.map((job) => {
+            if (job.id !== jobId) return job;
+            const next: QueueJob = {
+              ...job,
+              status: status as QueueJob['status'],
+              progress: status === 'completed' ? 100 : job.progress,
+              stage: detail?.reason ? stageLabel(detail.reason) : job.stage,
+            };
+            if (status === 'failed' && detail?.error) {
+              next.error = detail.error;
+            }
+            return next;
+          }));
+
+          if (status === 'completed') {
+            setReadyJobs((prev) => ({ ...prev, [jobId]: true }));
+            setSavedJobs((prev) => {
+              const copy = { ...prev };
+              delete copy[jobId];
+              return copy;
+            });
+            success('Preuzimanje je spremno za čuvanje.');
+          } else {
+            setReadyJobs((prev) => {
+              const copy = { ...prev };
+              delete copy[jobId];
+              return copy;
+            });
+            if (status === 'failed') {
+              toastError(detail?.error || 'Preuzimanje nije uspelo.');
+            }
+          }
+
+          loadQueueRef.current?.();
+        }
+      );
+      subsRef.current.set(jobId, subscription);
+    } catch (err) {
+      console.error('Neuspelo povezivanje na SSE za posao', err);
+    }
+  }, [stageLabel, success, toastError]);
 
   const loadQueue = useCallback(async () => {
     try {
       const response = await getJSON('/api/job/list') as any;
       if (response && Array.isArray(response.jobs)) {
         setJobs(response.jobs);
-        
-        // Connect SSE for running jobs
+
+        setReadyJobs((prev) => {
+          const next = { ...prev };
+          const activeCompleted = new Set<string>();
+          response.jobs.forEach((job: QueueJob) => {
+            if (job.status === 'completed') {
+              activeCompleted.add(job.id);
+              if (!next[job.id]) next[job.id] = true;
+            }
+          });
+          Object.keys(next).forEach((id) => {
+            if (!activeCompleted.has(id)) delete next[id];
+          });
+          return next;
+        });
+
         response.jobs.forEach((job: QueueJob) => {
-          if (job.status === 'running' && !sseConnections.has(job.id)) {
-            connectSSE(job.id);
+          if (job.status === 'running') {
+            void connectSSE(job.id);
+          } else {
+            const sub = subsRef.current.get(job.id);
+            if (sub) {
+              sub.close();
+              subsRef.current.delete(job.id);
+            }
           }
         });
       }
@@ -56,62 +140,26 @@ export default function QueueView() {
     } finally {
       setLoading(false);
     }
-  }, [sseConnections]);
-
-  const connectSSE = useCallback((jobId: string) => {
-    const apiBase = process.env.NEXT_PUBLIC_API_BASE || '';
-    const token = localStorage.getItem('auth:token');
-    const url = `${apiBase}/api/progress/${jobId}${token ? `?token=${token}` : ''}`;
-    
-    const sse = new EventSource(url);
-    
-    sse.onmessage = (event) => {
-      try {
-        const data: SSEEvent = JSON.parse(event.data);
-        
-        setJobs(prev => prev.map(job => {
-          if (job.id === jobId) {
-            return {
-              ...job,
-              stage: data.stage || job.stage,
-              progress: data.progress ?? job.progress,
-              speed: data.speed || job.speed,
-              eta: data.eta || job.eta,
-              status: data.type === 'complete' ? 'completed' : data.type === 'error' ? 'failed' : job.status,
-              error: data.error
-            };
-          }
-          return job;
-        }));
-
-        if (data.type === 'complete' || data.type === 'error') {
-          sse.close();
-          sseConnections.delete(jobId);
-          loadQueue();
-        }
-      } catch (err) {
-        // SSE parse error (silently handled)
-      }
-    };
-
-    sse.onerror = () => {
-      sse.close();
-      sseConnections.delete(jobId);
-    };
-
-    // Handle 'end' event to prevent memory leaks
-    sse.addEventListener('end', () => {
-      sse.close();
-      sseConnections.delete(jobId);
-    });
-
-    sseConnections.set(jobId, sse);
-  }, [loadQueue, sseConnections]);
+  }, [connectSSE]);
 
   const cancelJob = async (jobId: string) => {
     try {
       await postJSON('/api/job/cancel', { jobId });
-      success('Job canceled');
+      const sub = subsRef.current.get(jobId);
+      sub?.close();
+      subsRef.current.delete(jobId);
+      setReadyJobs((prev) => {
+        const copy = { ...prev };
+        delete copy[jobId];
+        return copy;
+      });
+      setSavedJobs((prev) => {
+        const copy = { ...prev };
+        delete copy[jobId];
+        return copy;
+      });
+      if (savingJobId === jobId) setSavingJobId(null);
+      success('Preuzimanje je otkazano.');
       loadQueue();
     } catch (err) {
       toastError('Failed to cancel job');
@@ -121,22 +169,89 @@ export default function QueueView() {
   const retryJob = async (jobId: string) => {
     try {
       await postJSON('/api/job/retry', { jobId });
-      success('Job restarted');
+      setReadyJobs((prev) => {
+        const copy = { ...prev };
+        delete copy[jobId];
+        return copy;
+      });
+      setSavedJobs((prev) => {
+        const copy = { ...prev };
+        delete copy[jobId];
+        return copy;
+      });
+      if (savingJobId === jobId) setSavingJobId(null);
+      success('Ponovno pokretanje poslova u toku.');
       loadQueue();
     } catch (err) {
       toastError('Failed to retry job');
     }
   };
 
+  const sanitizeBaseName = (input?: string) => {
+    if (!input) return 'download';
+    return input
+      .replace(/[\u0000-\u001f<>:"/\\|?*]+/g, '_')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, 80) || 'download';
+  };
+
+  const inferExtension = (job: QueueJob) => {
+    const format = job.format?.toLowerCase() || '';
+    if (/(mp4|mkv|webm|mov)/.test(format)) return format.match(/mp4|mkv|webm|mov/)?.[0] ?? 'mp4';
+    if (/(m4a|mp3|aac|flac|wav)/.test(format)) return format.match(/m4a|mp3|aac|flac|wav/)?.[0] ?? 'mp3';
+    return 'bin';
+  };
+
+  const handleSave = async (job: QueueJob) => {
+    if (!readyJobs[job.id]) {
+      toastError('Datoteka još nije spremna za preuzimanje.');
+      return;
+    }
+    setSavingJobId(job.id);
+    try {
+      const base = sanitizeBaseName(job.title || job.url);
+      const ext = inferExtension(job);
+      await downloadJobFile(job.id, `${base}.${ext}`);
+      setReadyJobs((prev) => {
+        const copy = { ...prev };
+        delete copy[job.id];
+        return copy;
+      });
+      setSavedJobs((prev) => ({ ...prev, [job.id]: true }));
+      success('Datoteka je sačuvana.');
+    } catch (err) {
+      console.error('Saving job failed', err);
+      toastError('Nije uspelo čuvanje datoteke. Pokušaj ponovo.');
+    } finally {
+      setSavingJobId((prev) => (prev === job.id ? null : prev));
+    }
+  };
+
+  const handleDismissReady = (jobId: string) => {
+    setReadyJobs((prev) => {
+      const copy = { ...prev };
+      delete copy[jobId];
+      return copy;
+    });
+  };
+
   useEffect(() => {
-    loadQueue();
-    const interval = setInterval(loadQueue, 5000);
-    
+    loadQueueRef.current = loadQueue;
+  }, [loadQueue]);
+
+  useEffect(() => {
+    void loadQueue();
+    const interval = setInterval(() => { void loadQueue(); }, 5000);
+
     return () => {
       clearInterval(interval);
-      sseConnections.forEach(sse => sse.close());
+      subsRef.current.forEach((sub) => {
+        try { sub.close(); } catch {}
+      });
+      subsRef.current.clear();
     };
-  }, [loadQueue, sseConnections]);
+  }, [loadQueue]);
 
   const getStatusIcon = (status: string) => {
     switch (status) {
@@ -234,7 +349,7 @@ export default function QueueView() {
                 {job.status === 'running' && job.progress !== undefined && (
                   <div className="space-y-1">
                     <div className="flex items-center justify-between text-xs text-slate-400">
-                      <span>{job.stage || 'Processing...'}</span>
+                      <span className="capitalize">{stageLabel(job.stage)}…</span>
                       <span>{Math.round(job.progress)}%</span>
                     </div>
                     <div className="h-2 bg-slate-800 rounded-full overflow-hidden">
@@ -261,12 +376,39 @@ export default function QueueView() {
                 )}
 
                 {/* Completed Message */}
-                {job.status === 'completed' && (
-                  <div className="flex items-center gap-2 text-xs text-green-300">
-                    <CheckCircle className="w-4 h-4" />
-                    <span>Download completed successfully</span>
-                  </div>
-                )}
+                {job.status === 'completed' && (() => {
+                  const isReady = readyJobs[job.id];
+                  const isSaved = savedJobs[job.id];
+                  return (
+                    <div className="space-y-2 text-xs">
+                      <div className="flex items-center gap-2 text-emerald-300">
+                        <CheckCircle className="w-4 h-4" />
+                        <span>Preuzimanje je završeno na serveru.</span>
+                      </div>
+                      {isReady && !isSaved && (
+                        <div className="flex flex-wrap gap-2">
+                          <button
+                            onClick={() => handleSave(job)}
+                            disabled={savingJobId === job.id}
+                            className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-emerald-500/20 border border-emerald-400/40 text-emerald-50 hover:bg-emerald-500/30 disabled:opacity-60 disabled:cursor-not-allowed transition"
+                          >
+                            <Download className="w-3.5 h-3.5" />
+                            <span>{savingJobId === job.id ? 'Čuvanje…' : 'Sačuvaj datoteku'}</span>
+                          </button>
+                          <button
+                            onClick={() => handleDismissReady(job.id)}
+                            className="px-3 py-1.5 rounded-lg border border-emerald-400/30 text-emerald-200 hover:bg-emerald-400/10 transition"
+                          >
+                            Podseti me kasnije
+                          </button>
+                        </div>
+                      )}
+                      {isSaved && (
+                        <div className="text-emerald-200/80">Datoteka je već sačuvana.</div>
+                      )}
+                    </div>
+                  );
+                })()}
               </div>
 
               {/* Actions */}

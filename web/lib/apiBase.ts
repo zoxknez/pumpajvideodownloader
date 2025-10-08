@@ -99,8 +99,6 @@ function computeRuntimeBase(): string {
 
 export const API_BASE = computeRuntimeBase();
 
-const ABSOLUTE_PATTERN = /^https?:\/\//i;
-
 function ensureLeadingSlash(path: string): string {
   if (!path) return '/';
   return path.startsWith('/') ? path : `/${path}`;
@@ -112,16 +110,3 @@ export function apiUrl(path: string): string {
   return `${API_BASE}${normalized}`;
 }
 
-export function absoluteApiUrl(path: string): string {
-  const candidate = apiUrl(path);
-  if (ABSOLUTE_PATTERN.test(candidate)) return candidate;
-  if (typeof window !== 'undefined' && window.location?.origin) {
-    return new URL(candidate, window.location.origin).toString();
-  }
-  const site = normalizeBase(process.env.NEXT_PUBLIC_SITE_URL ?? process.env.VERCEL_URL ?? '');
-  if (site) {
-    const base = ABSOLUTE_PATTERN.test(site) ? site : `https://${site}`;
-    return new URL(candidate, base).toString();
-  }
-  return candidate;
-}

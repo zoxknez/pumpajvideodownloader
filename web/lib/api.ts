@@ -1,7 +1,7 @@
-import { API_BASE, apiUrl, absoluteApiUrl } from './apiBase';
+import { API_BASE } from './apiBase';
 import { apiFetch, downloadJobFile as coreDownloadJobFile, mapToAudioAnalysis, mapToThumbnails, mapToVideoAnalysis, formatDuration } from './api-desktop';
 
-export { API_BASE, apiUrl, absoluteApiUrl };
+export { API_BASE };
 export { mapToAudioAnalysis, mapToThumbnails, mapToVideoAnalysis, formatDuration };
 export const downloadJobFile = coreDownloadJobFile;
 
@@ -24,5 +24,15 @@ export async function postJSON<T>(path: string, body: any): Promise<T> {
 
 export async function getJSON<T>(path: string): Promise<T> {
   const res = await apiFetch(path, { method: 'GET' });
+  return handleJson<T>(res);
+}
+
+export async function deleteJSON<T>(path: string, body?: any): Promise<T> {
+  const init: RequestInit = { method: 'DELETE' };
+  if (body !== undefined) {
+    init.headers = { 'Content-Type': 'application/json' };
+    init.body = JSON.stringify(body);
+  }
+  const res = await apiFetch(path, init);
   return handleJson<T>(res);
 }

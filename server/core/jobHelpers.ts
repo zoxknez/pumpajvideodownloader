@@ -156,17 +156,19 @@ export function createCloseHandler(opts: CloseHandlerOptions) {
             status: 'completed',
             progress: 100,
             size: `${Math.round(stat.size / 1024 / 1024)} MB`,
+            sizeBytes: stat.size,
+            completedAt: new Date().toISOString(),
           });
           clearHistoryThrottle(histId);
           emitProgress(histId, { progress: 100, stage: 'completed', size: stat.size, ...extraEmit });
           finalizeJob(histId, 'completed', { job });
           succeeded = true;
         } else {
-          updateHistory(histId, { status: 'failed' });
+          updateHistory(histId, { status: 'failed', completedAt: new Date().toISOString() });
           clearHistoryThrottle(histId);
         }
       } else {
-        updateHistory(histId, { status: 'failed' });
+        updateHistory(histId, { status: 'failed', completedAt: new Date().toISOString() });
         clearHistoryThrottle(histId);
       }
     } catch (err: any) {

@@ -36,6 +36,7 @@ describe('history endpoints auth', () => {
 
   it('allows appending history and reflecting it in authenticated GET', async () => {
     const entry = appendHistory({
+      userId: 'history-user',
       id: 'test-history-entry',
       title: 'History Test Video',
       url: 'https://example.com/video',

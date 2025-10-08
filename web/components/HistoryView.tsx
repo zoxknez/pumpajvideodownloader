@@ -1,21 +1,24 @@
 'use client';
 
 import React, { useEffect, useState, useCallback } from 'react';
-import { History, Trash2, RefreshCw, Download, ExternalLink, CheckCircle, XCircle, Clock, Search } from 'lucide-react';
+import { History, Trash2, RefreshCw, Download, ExternalLink, CheckCircle, XCircle, Clock, Search, HardDrive } from 'lucide-react';
 import { useToast } from './ToastProvider';
-import { getJSON, postJSON } from '@/lib/api';
+import { getJSON, deleteJSON, downloadJobFile } from '@/lib/api';
 
 interface HistoryItem {
   id: string;
   url: string;
   title?: string;
-  type: 'video' | 'audio' | 'playlist';
+  type: 'video' | 'audio' | 'playlist' | 'thumbnail' | 'batch' | 'clip';
   format?: string;
   quality?: string;
   status: 'completed' | 'failed';
   error?: string;
   createdAt: string;
   completedAt?: string;
+  size?: string;
+  sizeBytes?: number;
+  canDownload?: boolean;
 }
 
 export default function HistoryView() {
@@ -25,6 +28,7 @@ export default function HistoryView() {
   const [searchTerm, setSearchTerm] = useState('');
   const [filterType, setFilterType] = useState<'all' | 'video' | 'audio' | 'playlist'>('all');
   const [filterStatus, setFilterStatus] = useState<'all' | 'completed' | 'failed'>('all');
+  const [downloadingId, setDownloadingId] = useState<string | null>(null);
 
   const loadHistory = useCallback(async () => {
     try {
@@ -43,7 +47,7 @@ export default function HistoryView() {
     if (!confirm('Are you sure you want to clear all history?')) return;
     
     try {
-      await postJSON('/api/history/clear', {});
+      await deleteJSON('/api/history');
       success('History cleared');
       setItems([]);
     } catch (err) {
@@ -53,11 +57,48 @@ export default function HistoryView() {
 
   const removeItem = async (itemId: string) => {
     try {
-      await postJSON('/api/history/remove', { id: itemId });
+      await deleteJSON(`/api/history/${encodeURIComponent(itemId)}`);
+      setItems(prev => prev.filter((item) => item.id !== itemId));
       success('Item removed');
-      setItems(prev => prev.filter(item => item.id !== itemId));
     } catch (err) {
       toastError('Failed to remove item');
+    }
+  };
+
+  const sanitizeBaseName = (input?: string) => {
+    if (!input) return 'download';
+    return input
+      .replace(/[\u0000-\u001f<>:"/\\|?*]+/g, '_')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, 80) || 'download';
+  };
+
+  const inferExtension = (item: HistoryItem) => {
+    const format = item.format?.toLowerCase() || '';
+    if (/mp4|mkv|webm|mov/.test(format)) return format.match(/mp4|mkv|webm|mov/)?.[0] ?? 'mp4';
+    if (/m4a|mp3|aac|flac|wav|opus|ogg|oga|alac/.test(format)) {
+      return format.match(/m4a|mp3|aac|flac|wav|opus|ogg|oga|alac/)?.[0] ?? 'mp3';
+    }
+    return 'bin';
+  };
+
+  const handleDownload = async (item: HistoryItem) => {
+    if (!item.canDownload) {
+      toastError('File is no longer available on the server.');
+      return;
+    }
+    setDownloadingId(item.id);
+    try {
+      const base = sanitizeBaseName(item.title || item.url);
+      const ext = inferExtension(item);
+      await downloadJobFile(item.id, `${base}.${ext}`);
+      success('Download saved to your device.');
+    } catch (err) {
+      console.error('History download failed', err);
+      toastError('Could not save the file. It may have expired.');
+    } finally {
+      setDownloadingId((prev) => (prev === item.id ? null : prev));
     }
   };
 
@@ -86,9 +127,34 @@ export default function HistoryView() {
     switch (type) {
       case 'video': return 'bg-blue-500/20 border-blue-400/30 text-blue-300';
       case 'audio': return 'bg-purple-500/20 border-purple-400/30 text-purple-300';
+      case 'batch': return 'bg-amber-500/20 border-amber-400/30 text-amber-200';
       case 'playlist': return 'bg-green-500/20 border-green-400/30 text-green-300';
       default: return 'bg-white/10 border-white/20 text-white';
     }
+  };
+
+  const formatTimestamp = (item: HistoryItem) => {
+    const date = item.completedAt || item.createdAt;
+    try {
+      return new Date(date).toLocaleString();
+    } catch {
+      return item.completedAt || item.createdAt;
+    }
+  };
+
+  const formatSize = (item: HistoryItem) => {
+    if (item.size) return item.size;
+    const bytes = item.sizeBytes;
+    if (!bytes || !Number.isFinite(bytes)) return undefined;
+    const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+    let value = bytes;
+    let idx = 0;
+    while (value >= 1024 && idx < units.length - 1) {
+      value /= 1024;
+      idx += 1;
+    }
+    const precision = idx >= 2 ? 1 : 0;
+    return `${value.toFixed(precision)} ${units[idx]}`;
   };
 
   if (loading) {
@@ -216,9 +282,15 @@ export default function HistoryView() {
                         {item.quality}
                       </span>
                     )}
+                    {formatSize(item) && (
+                      <span className="px-2 py-0.5 rounded bg-white/5 border border-white/10 flex items-center gap-1">
+                        <HardDrive className="w-3 h-3" />
+                        {formatSize(item)}
+                      </span>
+                    )}
                     <span className="px-2 py-0.5 rounded bg-white/5 border border-white/10 flex items-center gap-1">
                       <Clock className="w-3 h-3" />
-                      {new Date(item.completedAt || item.createdAt).toLocaleString()}
+                      {formatTimestamp(item)}
                     </span>
                   </div>
 
@@ -244,16 +316,30 @@ export default function HistoryView() {
 
                 {/* Actions */}
                 <div className="flex items-center gap-2">
-                  <button
-                    onClick={() => {
-                      navigator.clipboard.writeText(item.url);
-                      success('URL copied! Go to Download tab to re-download.');
-                    }}
-                    className="p-2 hover:bg-blue-500/20 rounded-lg transition-colors group"
-                    title="Re-download (Copy URL)"
-                  >
-                    <Download className="w-4 h-4 text-blue-400 group-hover:text-blue-300" />
-                  </button>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => handleDownload(item)}
+                      disabled={!item.canDownload || downloadingId === item.id}
+                      className={`p-2 rounded-lg transition-colors ${
+                        item.canDownload
+                          ? 'hover:bg-blue-500/20'
+                          : 'opacity-60 cursor-not-allowed bg-white/10'
+                      }`}
+                      title={item.canDownload ? 'Save file again' : 'Download expired'}
+                    >
+                      <Download className={`w-4 h-4 ${item.canDownload ? 'text-blue-400' : 'text-slate-500'}`} />
+                    </button>
+                    <button
+                      onClick={() => {
+                        navigator.clipboard.writeText(item.url);
+                        success('URL copied! Paste in Download tab to start again.');
+                      }}
+                      className="p-2 hover:bg-white/10 rounded-lg transition-colors"
+                      title="Copy source URL"
+                    >
+                      <ExternalLink className="w-4 h-4 text-blue-200" />
+                    </button>
+                  </div>
                   <button
                     onClick={() => removeItem(item.id)}
                     className="p-2 hover:bg-white/10 rounded-lg transition-colors"

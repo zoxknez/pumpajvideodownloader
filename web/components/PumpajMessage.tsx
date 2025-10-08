@@ -128,5 +128,3 @@ export function PumpajMessage({ language, className = '' }: PumpajMessageProps) 
     </div>
   );
 }
-
-export default PumpajMessage;
