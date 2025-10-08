@@ -40,6 +40,13 @@ server/dist/
 *.tmp
 *.bak
 
+# YouTube cookies (NEVER commit - contains session data!)
+*cookies.txt
+youtube-cookies.txt
+yt-cookies.txt
+cookies/
+.cookies/
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

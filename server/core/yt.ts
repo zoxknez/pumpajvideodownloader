@@ -10,6 +10,11 @@ export async function dumpJson(url: string, opts?: { timeoutMs?: number; signal?
     ? (AbortSignal as any).timeout(timeoutMs)
     : newAbortWithTimeout(timeoutMs);
   const ctrl = combineSignals(opts?.signal, timeoutSig);
+  
+  // YouTube cookie support for bot protection bypass
+  const ytCookiesPath = process.env.YOUTUBE_COOKIES_PATH || process.env.YT_COOKIES;
+  const cookiesFromBrowser = process.env.COOKIES_FROM_BROWSER; // e.g., 'chrome', 'firefox', 'edge'
+  
   const raw = await (youtubedl as any)(url, {
     dumpSingleJson: true,
     noCheckCertificates: true,
@@ -17,6 +22,8 @@ export async function dumpJson(url: string, opts?: { timeoutMs?: number; signal?
     ignoreErrors: false,
     retries: 5,
     socketTimeout: 20,
+    ...(ytCookiesPath ? { cookies: ytCookiesPath } : {}),
+    ...(cookiesFromBrowser ? { cookiesFromBrowser } : {}),
     ...(opts?.args || {}),
   }, { shell: false, windowsHide: true, signal: ctrl, maxBuffer: MAX_BUFFER, env: cleanedChildEnv(process.env) });
   try {

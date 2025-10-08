@@ -48,6 +48,28 @@ import { createManualCorsMiddleware } from './middleware/corsManual.js';
 const log = getLogger('server');
 const cfg = loadConfig();
 
+// Decode YouTube cookies from base64 if provided (Railway deployment helper)
+if (process.env.YOUTUBE_COOKIES_BASE64 && !process.env.YOUTUBE_COOKIES_PATH) {
+  try {
+    const decoded = Buffer.from(process.env.YOUTUBE_COOKIES_BASE64, 'base64').toString('utf8');
+    const cookiesPath = '/tmp/youtube-cookies.txt';
+    fs.writeFileSync(cookiesPath, decoded, 'utf8');
+    process.env.YOUTUBE_COOKIES_PATH = cookiesPath;
+    log.info('youtube_cookies_decoded', { path: cookiesPath });
+  } catch (err: any) {
+    log.error('youtube_cookies_decode_failed', err?.message || err);
+  }
+}
+
+// Log cookies configuration for debugging
+if (process.env.YOUTUBE_COOKIES_PATH) {
+  log.info('youtube_cookies_enabled', { path: process.env.YOUTUBE_COOKIES_PATH });
+} else if (process.env.COOKIES_FROM_BROWSER) {
+  log.info('youtube_cookies_from_browser', { browser: process.env.COOKIES_FROM_BROWSER });
+} else {
+  log.warn('youtube_cookies_not_configured', 'YouTube may block requests due to bot detection');
+}
+
 // NOTE: noCheckCertificates is currently hard-coded to true in all yt-dlp calls.
 // If you make this configurable via env var in future, add warning log here:
 // if (process.env.NO_CHECK_CERTS === '1') { log.warn('insecure_tls_enabled', 'TLS verification disabled'); }
