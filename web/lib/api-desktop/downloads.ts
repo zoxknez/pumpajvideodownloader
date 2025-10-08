@@ -35,6 +35,25 @@ export async function proxyDownload(options: {
   const target = new URL(`${API_BASE}/api/proxy-download`);
   target.searchParams.set('url', options.url);
   target.searchParams.set('filename', options.filename);
+  
+  // Add auth token to query params for direct browser download links
+  const { getSupabase } = await import('../supabaseClient');
+  const supabase = getSupabase();
+  if (supabase) {
+    try {
+      const { data } = await supabase.auth.getSession();
+      const token = data.session?.access_token;
+      if (token) {
+        target.searchParams.set('token', token);
+      }
+    } catch {
+      // Fallback to localStorage token
+      if (typeof window !== 'undefined') {
+        const token = window.localStorage?.getItem('app:token');
+        if (token) target.searchParams.set('token', token);
+      }
+    }
+  }
 
   if (options.onProgress) {
     try {
