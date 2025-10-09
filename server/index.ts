@@ -43,6 +43,7 @@ import { setupSubtitleRoutes } from './routes/subtitles.js';
 import { setupAnalyzeRoutes } from './routes/analyze.js';
 import { setupSystemRoutes } from './routes/system.js';
 import { createManualCorsMiddleware } from './middleware/corsManual.js';
+import { startYtDlpAutoUpdate } from './core/ytUpdate.js';
 
 // ---- App init / middleware ----
 const log = getLogger('server');
@@ -69,6 +70,8 @@ if (process.env.YOUTUBE_COOKIES_PATH) {
 } else {
   log.warn('youtube_cookies_not_configured', 'YouTube may block requests due to bot detection');
 }
+
+startYtDlpAutoUpdate(log);
 
 // NOTE: noCheckCertificates is currently hard-coded to true in all yt-dlp calls.
 // If you make this configurable via env var in future, add warning log here:

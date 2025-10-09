@@ -96,7 +96,8 @@ export function setupJobFileRoutes(app: any, middleware: JobFileMiddleware, deps
   const historyEntry = readHistory().find((x) => x.id === id);
   const base = (historyEntry?.title || (job.type === 'audio' ? 'audio' : 'video')).replace(/[^\w.-]+/g, '_');
       const extName = path.extname(full).replace(/^\./, '') || (job.type === 'audio' ? 'm4a' : 'mp4');
-      setDownloadHeaders(res, `${base}.${extName}`, undefined, etag);
+  const disposition = isAudio ? 'attachment' : 'inline';
+  setDownloadHeaders(res, `${base}.${extName}`, undefined, etag, disposition);
 
       const ifNoneMatch = req.headers['if-none-match'];
       if (ifNoneMatch) {

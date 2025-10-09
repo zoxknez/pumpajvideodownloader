@@ -41,12 +41,13 @@ export const setDownloadHeaders = (
   res: Response,
   filename: string,
   size?: number,
-  etag?: string
+  etag?: string,
+  disposition: 'attachment' | 'inline' = 'attachment'
 ): void => {
   // RFC 5987: filename* with UTF-8 encoding for better Unicode support
   const asciiSafe = filename.replace(/[^\x20-\x7E]/g, '_'); // ASCII fallback
   const utf8Encoded = encodeURIComponent(filename);
-  res.setHeader('Content-Disposition', `attachment; filename="${asciiSafe}"; filename*=UTF-8''${utf8Encoded}`);
+  res.setHeader('Content-Disposition', `${disposition}; filename="${asciiSafe}"; filename*=UTF-8''${utf8Encoded}`);
   
   if (size !== undefined) {
     res.setHeader('Content-Length', String(size));
